@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+:root {
+  --background: #fdf8f2;
+  --foreground: #2d241f;
+  --muted: #8a817c;
+  --primary: #f09a56;
+  --secondary: #2d241f;
+  --surface: #ffffff;
+  --border: rgba(45, 36, 31, 0.08);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-serif: var(--font-serif);
+}
+
+body {
+  background: radial-gradient(circle at 20% 20%, rgba(240, 154, 86, 0.08), transparent 25%),
+    radial-gradient(circle at 80% 0%, rgba(240, 154, 86, 0.06), transparent 30%),
+    var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+}
+
+.blur-pill {
+  filter: blur(60px);
+  opacity: 0.9;
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid var(--border);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.08);
+}
+
+.fade-up {
+  animation: fadeUp 0.7s ease forwards;
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+@keyframes fadeUp {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
