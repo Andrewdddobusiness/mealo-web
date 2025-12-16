@@ -1,0 +1,81 @@
+import { pgTable, text, timestamp, integer, boolean, jsonb, index, uuid } from 'drizzle-orm/pg-core';
+
+export const users = pgTable('users', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  email: text('email').notNull(),
+  avatar: text('avatar'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const households = pgTable('households', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  ownerId: text('owner_id').notNull(),
+  createdBy: text('created_by').references(() => users.id),
+  memberIds: jsonb('member_ids').default([]),
+  currentPeriodStart: text('current_period_start'),
+  currentPeriodEnd: text('current_period_end'),
+  shoppingList: jsonb('shopping_list').default([]),
+  currency: text('currency').default('USD'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const meals = pgTable('meals', {
+  id: text('id').primaryKey(),
+  householdId: text('household_id').references(() => households.id).notNull(),
+  name: text('name').notNull(),
+  description: text('description'),
+  createdBy: text('created_by').references(() => users.id),
+  ingredients: jsonb('ingredients').default([]),
+  instructions: jsonb('instructions').default([]),
+  fromGlobalMealId: text('from_global_meal_id'),
+  rating: integer('rating').default(0),
+  isFavorite: boolean('is_favorite').default(false),
+  userNotes: text('user_notes'),
+  image: text('image'),
+  cuisine: text('cuisine'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const plans = pgTable('plans', {
+  id: text('id').primaryKey(),
+  householdId: text('household_id').references(() => households.id).notNull(),
+  mealId: text('meal_id').references(() => meals.id).notNull(),
+  date: text('date').notNull(),
+  isCompleted: boolean('is_completed').default(false),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const globalMeals = pgTable('global_meals', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description'),
+  ingredients: jsonb('ingredients').default([]),
+  instructions: jsonb('instructions').default([]),
+  image: text('image'),
+  cuisine: text('cuisine'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const household_members = pgTable('household_members', {
+  id: uuid('id').primaryKey(),
+  householdId: text('household_id').references(() => households.id, { onDelete: 'cascade' }).notNull(),
+  userId: text('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  role: text('role').notNull(), // "owner" | "member"
+  joinedAt: timestamp('joined_at').defaultNow(),
+}, (table) => ({
+  householdIdx: index('household_members_household_id_idx').on(table.householdId),
+}));
+
+export const invites = pgTable('invites', {
+  id: uuid('id').primaryKey(),
+  householdId: text('household_id').references(() => households.id, { onDelete: 'cascade' }).notNull(),
+  token: text('token').notNull(),
+  expiresAt: timestamp('expires_at').notNull(),
+  usesLeft: integer('uses_left'),
+  createdBy: text('created_by').references(() => users.id).notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+}, (table) => ({
+  tokenIdx: index('invites_token_idx').on(table.token),
+}));
