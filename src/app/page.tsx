@@ -59,13 +59,20 @@ export default function Home() {
                   </a>
                 </Button>
               </div>
-              <div className="flex items-center gap-6 text-sm text-muted pt-4">
-                <div className="flex -space-x-2">
+              <div className="flex items-center gap-4 text-sm font-medium text-muted">
+                <div className="flex -space-x-4 rtl:space-x-reverse">
                   {[1, 2, 3, 4].map((i) => (
-                    <div key={i} className="h-8 w-8 rounded-full border-2 border-white bg-gray-200" />
+                    <Image
+                      key={i}
+                      src={`/avatar-${i}.png`}
+                      alt={`User ${i}`}
+                      width={48}
+                      height={48}
+                      className="h-12 w-12 rounded-full border-2 border-background object-cover"
+                    />
                   ))}
                 </div>
-                <p>Trusted by 10,000+ meticulous planners</p>
+                Trusted by 10,000+ meticulous planners
               </div>
             </div>
 
