@@ -5,6 +5,7 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 First, run the development server:
 
 ```bash
+npm install
 npm run dev
 # or
 yarn dev
@@ -16,7 +17,27 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment variables
+
+The web landing page can optionally look up invite metadata (group name, inviter, expiry) from Neon.
+
+Create `mealo-web/mealo-web/.env.local`:
+
+```bash
+# Server-only (do NOT prefix with NEXT_PUBLIC)
+DATABASE_URL="postgresql://USER:PASSWORD@HOST:5432/DB?sslmode=require"
+
+# Optional: customize store links shown on /invite/[token]
+NEXT_PUBLIC_APP_STORE_URL="https://apps.apple.com/..."
+NEXT_PUBLIC_PLAY_STORE_URL="https://play.google.com/store/apps/details?id=com.mealo.app"
+
+# Optional (dev only): enables "Open in Expo Go" button on invite page
+NEXT_PUBLIC_EXPO_PROJECT_URL="exp://192.168.0.35:8081"
+```
+
+If `DATABASE_URL` is not set, `/invite/[token]` still renders, but won’t show group details (the Mealo app will validate/redeem the token).
+
+You can start editing the page by modifying `src/app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 

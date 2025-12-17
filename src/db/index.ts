@@ -1,7 +1,10 @@
 import { neon } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-http';
+import { drizzle, type NeonHttpDatabase } from 'drizzle-orm/neon-http';
 import * as schema from './schema';
 
-// Use DATABASE_URL from env
-const sql = neon(process.env.DATABASE_URL!);
-export const db = drizzle(sql, { schema });
+const connectionString = process.env.DATABASE_URL;
+
+// Server-side DB client (null when not configured, e.g. local dev without env vars).
+export const db: NeonHttpDatabase<typeof schema> | null = connectionString
+  ? drizzle(neon(connectionString), { schema })
+  : null;
