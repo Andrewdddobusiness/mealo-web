@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, boolean, jsonb, index, uuid } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, integer, boolean, jsonb, index } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
   id: text('id').primaryKey(),
@@ -59,7 +59,7 @@ export const globalMeals = pgTable('global_meals', {
 });
 
 export const household_members = pgTable('household_members', {
-  id: uuid('id').primaryKey(),
+  id: text('id').primaryKey(),
   householdId: text('household_id').references(() => households.id, { onDelete: 'cascade' }).notNull(),
   userId: text('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   role: text('role').notNull(), // "owner" | "member"
@@ -69,7 +69,7 @@ export const household_members = pgTable('household_members', {
 }));
 
 export const invites = pgTable('invites', {
-  id: uuid('id').primaryKey(),
+  id: text('id').primaryKey(),
   householdId: text('household_id').references(() => households.id, { onDelete: 'cascade' }).notNull(),
   token: text('token').notNull(),
   expiresAt: timestamp('expires_at').notNull(),
@@ -79,3 +79,14 @@ export const invites = pgTable('invites', {
 }, (table) => ({
   tokenIdx: index('invites_token_idx').on(table.token),
 }));
+
+export const subscriptions = pgTable('subscriptions', {
+  userId: text('user_id').references(() => users.id).primaryKey(),
+  originalTransactionId: text('original_transaction_id').notNull(),
+  productId: text('product_id').notNull(),
+  expiresAt: timestamp('expires_at').notNull(),
+  isTrial: boolean('is_trial').default(false),
+  isActive: boolean('is_active').default(true),
+  autoRenewStatus: boolean('auto_renew_status').default(true),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
