@@ -1,15 +1,31 @@
 import { clerkMiddleware } from "@clerk/nextjs/server";
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 
-export default clerkMiddleware((auth, req) => {
-  console.log(`[Middleware] Processing: ${req.url} | Secret=${!!process.env.CLERK_SECRET_KEY} | Pub=${!!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}`);
-  try {
-    // Just calling auth() to trigger any internal checks
-    // auth(); 
-    // Actually, let's just log for now.
-  } catch (e) {
-    console.error("[Middleware] Error:", e);
-  }
+const clerkMw = clerkMiddleware((auth, req) => {
+  console.log(
+    `[Middleware] Processing: ${req.url} | Secret=${!!process.env.CLERK_SECRET_KEY} | Pub=${!!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}`,
+  );
 });
+
+export default async function middleware(req: NextRequest) {
+  const hasSecret = !!process.env.CLERK_SECRET_KEY;
+  const hasPublishable = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+
+  if (!hasSecret || !hasPublishable) {
+    console.error(
+      `[Middleware] Missing Clerk envs | Secret=${hasSecret} | Pub=${hasPublishable}`,
+    );
+    return new NextResponse("Missing Clerk environment variables", { status: 500 });
+  }
+
+  try {
+    return await clerkMw(req);
+  } catch (e) {
+    console.error("[Middleware] Invocation failed:", e);
+    return new NextResponse("Middleware invocation failed", { status: 500 });
+  }
+}
 
 export const config = {
   matcher: [
