@@ -15,13 +15,14 @@ export async function GET() {
     if (!db) {
         return new NextResponse("Database not configured", { status: 500 });
     }
+    const database = db;
 
     // 1. Get households where user is a member
-    const memberships = await db.select().from(household_members).where(eq(household_members.userId, userId));
+    const memberships = await database.select().from(household_members).where(eq(household_members.userId, userId));
     const householdIds = memberships.map(m => m.householdId);
 
     // 2. Also fetch owned households (legacy/safety)
-    const ownedHouseholds = await db.select().from(households).where(eq(households.createdBy, userId));
+    const ownedHouseholds = await database.select().from(households).where(eq(households.createdBy, userId));
     const ownedIds = ownedHouseholds.map(h => h.id);
 
     const allIds = Array.from(new Set([...householdIds, ...ownedIds]));
@@ -31,13 +32,13 @@ export async function GET() {
     }
 
     // 3. Fetch household details
-    const userHouseholds = await db.select().from(households).where(inArray(households.id, allIds));
+    const userHouseholds = await database.select().from(households).where(inArray(households.id, allIds));
 
     // 4. Enrich with members and plans (similar to mobile logic)
     const householdsWithDetails = await Promise.all(userHouseholds.map(async (h) => {
-        const householdPlans = await db.select().from(plans).where(eq(plans.householdId, h.id));
+        const householdPlans = await database.select().from(plans).where(eq(plans.householdId, h.id));
         
-        const membersRel = await db.select({
+        const membersRel = await database.select({
             user: users,
             role: household_members.role
         })
@@ -84,6 +85,7 @@ export async function POST(req: Request) {
     if (!db) {
         return new NextResponse("Database not configured", { status: 500 });
     }
+    const database = db;
 
     const body = await req.json();
     const { name } = body;
@@ -105,9 +107,9 @@ export async function POST(req: Request) {
     };
 
     // Transaction-like operations
-    await db.insert(households).values(newHousehold);
+    await database.insert(households).values(newHousehold);
     
-    await db.insert(household_members).values({
+    await database.insert(household_members).values({
         id: uuidv4(),
         householdId: id,
         userId: userId,
