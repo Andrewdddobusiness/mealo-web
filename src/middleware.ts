@@ -2,6 +2,8 @@ import { clerkMiddleware } from "@clerk/nextjs/server";
 
 export default clerkMiddleware((auth, req) => {
   console.log(`[Middleware] Processing: ${req.url}`);
+  console.log(`[Middleware] CLERK_SECRET_KEY Present: ${!!process.env.CLERK_SECRET_KEY}`);
+  console.log(`[Middleware] NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY Present: ${!!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}`);
   try {
     // Just calling auth() to trigger any internal checks
     // auth(); 
