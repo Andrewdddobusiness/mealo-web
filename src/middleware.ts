@@ -1,6 +1,15 @@
 import { clerkMiddleware } from "@clerk/nextjs/server";
 
-export default clerkMiddleware();
+export default clerkMiddleware((auth, req) => {
+  console.log(`[Middleware] Processing: ${req.url}`);
+  try {
+    // Just calling auth() to trigger any internal checks
+    // auth(); 
+    // Actually, let's just log for now.
+  } catch (e) {
+    console.error("[Middleware] Error:", e);
+  }
+});
 
 export const config = {
   matcher: [
