@@ -55,8 +55,8 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
             return new NextResponse("Forbidden", { status: 403 });
         }
 
-        const { name, email, avatar } = body;
-        const updateData: any = {};
+        const { name, email, avatar } = body as Partial<typeof users.$inferInsert>;
+        const updateData: Partial<typeof users.$inferInsert> = {};
         if (name) updateData.name = name;
         if (email) updateData.email = email;
         if (avatar) updateData.avatar = avatar;

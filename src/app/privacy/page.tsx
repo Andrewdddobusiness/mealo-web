@@ -1,3 +1,4 @@
+/* eslint-disable react/no-unescaped-entities */
 export default function PrivacyPage() {
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#fdf8f2]">

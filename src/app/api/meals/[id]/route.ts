@@ -39,8 +39,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
     // 3. Update meal
     // Extract allowed fields
-    const { name, description, ingredients, instructions, image, cuisine, rating, isFavorite, userNotes } = body;
-    const updateData: any = {};
+    const { name, description, ingredients, instructions, image, cuisine, rating, isFavorite, userNotes } =
+      body as Partial<typeof meals.$inferInsert>;
+    const updateData: Partial<typeof meals.$inferInsert> = {};
     
     if (name !== undefined) updateData.name = name;
     if (description !== undefined) updateData.description = description;

@@ -5,7 +5,7 @@ import { meals, household_members } from '../../../db/schema';
 import { eq, inArray, and } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 
-export async function GET(req: Request) {
+export async function GET() {
   try {
     const { userId } = await auth();
     if (!userId) {

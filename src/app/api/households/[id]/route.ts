@@ -32,8 +32,8 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
     // Extract allowed fields to update
     // Currently only shoppingList and name seem relevant
-    const { name, shoppingList } = body;
-    const updateData: any = {};
+    const { name, shoppingList } = body as Partial<typeof households.$inferInsert>;
+    const updateData: Partial<typeof households.$inferInsert> = {};
     if (name) updateData.name = name;
     if (shoppingList) updateData.shoppingList = shoppingList;
 

@@ -1,3 +1,4 @@
+/* eslint-disable react/no-unescaped-entities */
 import { db } from '@/db';
 import { invites, households, users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
@@ -17,7 +18,6 @@ export default async function InvitePage({ params }: Props) {
 
   const hdrs = await headers();
   const ua = hdrs.get('user-agent') ?? '';
-  const host = hdrs.get('host') ?? '';
   const isAndroid = /Android/i.test(ua);
   const isIOS = /iPhone|iPad|iPod/i.test(ua);
 
@@ -26,22 +26,11 @@ export default async function InvitePage({ params }: Props) {
   const playStoreUrl =
     process.env.NEXT_PUBLIC_PLAY_STORE_URL ??
     'https://play.google.com/store/apps/details?id=com.mealo.app';
-  const explicitExpoProjectUrl = process.env.NEXT_PUBLIC_EXPO_PROJECT_URL;
-  const guessedExpoProjectUrl =
-    process.env.NODE_ENV === 'development' && !explicitExpoProjectUrl && host
-      ? `exp://${host.split(':')[0]}:8081`
-      : null;
-  const expoProjectUrl = explicitExpoProjectUrl ?? guessedExpoProjectUrl;
-  const expoGoLink =
-    process.env.NODE_ENV === 'development' && expoProjectUrl
-      ? `${expoProjectUrl.replace(/\/$/, '')}/--/invite?token=${encodeURIComponent(token)}`
-      : null;
 
   const primaryDownloadUrl = isAndroid ? playStoreUrl : appStoreUrl;
 
   let householdName: string | null = null;
   let inviterName: string | null = null;
-  let expiresAt: Date | null = null;
   let isExpired = false;
   let isInvalid = false;
 
@@ -63,7 +52,6 @@ export default async function InvitePage({ params }: Props) {
     } else {
       householdName = invite[0].householdName;
       inviterName = invite[0].inviterName;
-      expiresAt = invite[0].expiresAt;
       isExpired = new Date() > invite[0].expiresAt;
     }
   }

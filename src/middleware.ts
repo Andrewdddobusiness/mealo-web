@@ -1,5 +1,5 @@
 import { clerkMiddleware } from "@clerk/nextjs/server";
-import type { NextRequest } from "next/server";
+import type { NextRequest, NextFetchEvent } from "next/server";
 import { NextResponse } from "next/server";
 
 const clerkMw = clerkMiddleware((auth, req) => {
@@ -8,7 +8,7 @@ const clerkMw = clerkMiddleware((auth, req) => {
   );
 });
 
-export default async function middleware(req: NextRequest) {
+export default function middleware(req: NextRequest, event: NextFetchEvent) {
   const hasSecret = !!process.env.CLERK_SECRET_KEY;
   const hasPublishable = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
@@ -20,7 +20,7 @@ export default async function middleware(req: NextRequest) {
   }
 
   try {
-    return await clerkMw(req);
+    return clerkMw(req, event);
   } catch (e) {
     console.error("[Middleware] Invocation failed:", e);
     return new NextResponse("Middleware invocation failed", { status: 500 });
