@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
 import { getUserIdFromRequest } from "@/lib/requestAuth";
+import { clerkClient } from "@clerk/nextjs/server";
 import { db } from "../../../db";
 import { users } from "../../../db/schema";
 import { eq } from "drizzle-orm";
+
+function normalizeString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : undefined;
+}
 
 export async function POST(req: Request) {
   try {
@@ -28,24 +35,49 @@ export async function POST(req: Request) {
     }
 
     const body = (await req.json()) as Partial<typeof users.$inferInsert>;
-    const { id, name, email, avatar } = body;
+    const requestedId = normalizeString(body.id);
+    const effectiveId = requestedId ?? userId;
 
-    if (!id || !name || !email) {
-      return new NextResponse("Missing required fields", { status: 400 });
+    if (effectiveId !== userId) {
+      console.error("[USERS_POST] Forbidden: id mismatch", { requestedId, userId });
+      return new NextResponse("Forbidden", { status: 403 });
     }
 
-    if (id !== userId) {
-      console.error("[USERS_POST] Forbidden: id mismatch", { id, userId });
-      return new NextResponse("Forbidden", { status: 403 });
+    let name = normalizeString(body.name);
+    let email = normalizeString(body.email);
+    let avatar = normalizeString(body.avatar);
+
+    if (!name || !email) {
+      const client = await clerkClient();
+      const clerkUser = await client.users.getUser(userId);
+
+      name =
+        name ??
+        normalizeString(clerkUser.fullName) ??
+        normalizeString([clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(" ")) ??
+        "User";
+
+      const primaryEmail =
+        clerkUser.primaryEmailAddress?.emailAddress ??
+        clerkUser.emailAddresses?.find((e) => e.id === clerkUser.primaryEmailAddressId)?.emailAddress ??
+        clerkUser.emailAddresses?.[0]?.emailAddress;
+
+      email = email ?? normalizeString(primaryEmail);
+      avatar = avatar ?? normalizeString(clerkUser.imageUrl);
+    }
+
+    if (!email) {
+      console.error("[USERS_POST] Missing email for user", { userId });
+      return new NextResponse("Missing required fields (email)", { status: 400 });
     }
 
     console.log("[USERS_POST] Auth ok", { userId });
 
-    const existing = await db.select().from(users).where(eq(users.id, id));
+    const existing = await db.select().from(users).where(eq(users.id, effectiveId));
 
     if (existing.length === 0) {
       const newUser = {
-        id,
+        id: effectiveId,
         name,
         email,
         avatar,
