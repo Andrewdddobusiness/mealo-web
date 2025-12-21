@@ -8,7 +8,18 @@ export async function POST(req: Request) {
   try {
     const userId = await getUserIdFromRequest(req);
     if (!userId) {
-      return new NextResponse("Unauthorized", { status: 401 });
+      const authHeader = req.headers.get("authorization") ?? req.headers.get("Authorization");
+      const bearer = authHeader?.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : null;
+      const dotCount = bearer ? (bearer.match(/\./g) || []).length : 0;
+
+      console.error("[USERS_POST] Unauthorized", {
+        hasAuthHeader: !!authHeader,
+        bearerLike: !!bearer,
+        tokenDots: dotCount,
+      });
+
+      const reason = !authHeader ? "missing_authorization" : !bearer ? "not_bearer" : "invalid_token";
+      return new NextResponse(`Unauthorized (${reason})`, { status: 401 });
     }
 
     if (!db) {
@@ -50,4 +61,3 @@ export async function POST(req: Request) {
     return new NextResponse("Internal Error", { status: 500 });
   }
 }
-
