@@ -6,12 +6,14 @@ import { eq } from 'drizzle-orm';
 
 export async function POST(req: Request) {
   try {
-    const { userId } = await auth();
+    const { userId, sessionId, orgId, getToken } = await auth();
     if (!userId) {
+      console.error("[USERS_POST] No userId from auth()");
       return new NextResponse("Unauthorized", { status: 401 });
     }
 
     if (!db) {
+        console.error("[USERS_POST] db not configured");
         return new NextResponse("Database not configured", { status: 500 });
     }
 
@@ -24,8 +26,18 @@ export async function POST(req: Request) {
 
     // Ensure user can only upsert themselves
     if (id !== userId) {
+        console.error("[USERS_POST] Forbidden: id mismatch", { id, userId });
         return new NextResponse("Forbidden", { status: 403 });
     }
+
+    console.log("[USERS_POST] Auth ok", {
+      userId,
+      sessionId,
+      orgId,
+      hasDb: !!db,
+      namePresent: !!name,
+      emailPresent: !!email,
+    });
 
     const existing = await db.select().from(users).where(eq(users.id, id));
     
