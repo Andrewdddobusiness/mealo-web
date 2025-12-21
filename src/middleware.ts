@@ -11,12 +11,16 @@ const clerkMw = clerkMiddleware((auth, req) => {
 export default function middleware(req: NextRequest, event: NextFetchEvent) {
   const hasSecret = !!process.env.CLERK_SECRET_KEY;
   const hasPublishable = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+  const isProd =
+    process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production";
 
   if (!hasSecret || !hasPublishable) {
     console.error(
       `[Middleware] Missing Clerk envs | Secret=${hasSecret} | Pub=${hasPublishable}`,
     );
-    return new NextResponse("Missing Clerk environment variables", { status: 500 });
+    if (isProd) {
+      return new NextResponse("Missing Clerk environment variables", { status: 500 });
+    }
   }
 
   try {
