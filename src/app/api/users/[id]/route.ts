@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { db } from '../../../../db';
 import { users } from '../../../../db/schema';
 import { eq } from 'drizzle-orm';
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const { userId } = await auth();
+    const userId = await getUserIdFromRequest(req);
     if (!userId) {
       return new NextResponse("Unauthorized", { status: 401 });
     }
@@ -39,7 +39,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
     try {
-        const { userId } = await auth();
+        const userId = await getUserIdFromRequest(req);
         if (!userId) {
           return new NextResponse("Unauthorized", { status: 401 });
         }

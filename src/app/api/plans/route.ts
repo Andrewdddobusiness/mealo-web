@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { db } from '../../../db';
 import { plans, household_members } from '../../../db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 export async function POST(req: Request) {
   try {
-    const { userId } = await auth();
+    const userId = await getUserIdFromRequest(req);
     if (!userId) {
       return new NextResponse("Unauthorized", { status: 401 });
     }
@@ -57,7 +57,7 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
     try {
-        const { userId } = await auth();
+        const userId = await getUserIdFromRequest(req);
         if (!userId) {
           return new NextResponse("Unauthorized", { status: 401 });
         }
