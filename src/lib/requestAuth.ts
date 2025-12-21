@@ -1,4 +1,4 @@
-import { auth, verifyToken } from "@clerk/nextjs/server";
+import { auth, clerkClient, verifyToken } from "@clerk/nextjs/server";
 
 function getBearerToken(req: Request): string | null {
   const raw = req.headers.get("authorization") ?? req.headers.get("Authorization");
@@ -14,6 +14,7 @@ export async function getUserIdFromRequest(req: Request): Promise<string | null>
   // Mobile/native clients commonly use `Authorization: Bearer <jwt>`.
   if (bearer) {
     const secretKey = process.env.CLERK_SECRET_KEY;
+    const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
     if (!secretKey) {
       console.error("[Auth] CLERK_SECRET_KEY missing while verifying Bearer token");
       return null;
@@ -24,9 +25,29 @@ export async function getUserIdFromRequest(req: Request): Promise<string | null>
       const sub = payload?.sub;
       return typeof sub === "string" && sub.length ? sub : null;
     } catch (e) {
-      console.error("[Auth] verifyToken failed");
+      // If the Bearer token isn't a JWT Clerk can verify locally (common in native flows),
+      // fall back to Clerk's request authentication which can validate other token types.
+      console.error("[Auth] verifyToken failed; falling back to authenticateRequest");
       console.error(e);
-      return null;
+
+      try {
+        if (!publishableKey) {
+          console.error("[Auth] NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY missing for authenticateRequest");
+          return null;
+        }
+
+        const client = await clerkClient();
+        const requestState = await client.authenticateRequest(req, {
+          secretKey,
+          publishableKey,
+        });
+        const authObj = requestState.toAuth();
+        return authObj?.userId ?? null;
+      } catch (fallbackError) {
+        console.error("[Auth] authenticateRequest fallback failed");
+        console.error(fallbackError);
+        return null;
+      }
     }
   }
 
@@ -40,4 +61,3 @@ export async function getUserIdFromRequest(req: Request): Promise<string | null>
     return null;
   }
 }
-
