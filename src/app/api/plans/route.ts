@@ -45,7 +45,16 @@ export async function POST(req: Request) {
       createdAt: new Date()
     };
 
-    await db.insert(plans).values(newPlan);
+    try {
+      await db.insert(plans).values(newPlan);
+    } catch (e: any) {
+      // Common: mealId is a global meal ID (not imported), which violates FK plans.meal_id -> meals.id.
+      const code = e?.code as string | undefined;
+      if (code === '23503' || /foreign key/i.test(String(e?.message ?? ''))) {
+        return new NextResponse("Meal must be imported before it can be scheduled", { status: 400 });
+      }
+      throw e;
+    }
 
     return NextResponse.json(newPlan);
 
