@@ -2,8 +2,31 @@ import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { db } from '../../../../db';
 import { meals, globalMeals, household_members } from '../../../../db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
+
+function normalizeText(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function canonicalIngredientsKey(ingredients: unknown): string {
+  if (!Array.isArray(ingredients)) return '';
+  const parts = ingredients
+    .map((raw) => {
+      const obj = (raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}) as Record<
+        string,
+        unknown
+      >;
+      const name = normalizeText(obj.name);
+      if (!name) return '';
+      const unit = normalizeText(obj.unit);
+      const quantity = obj.quantity == null ? '' : String(obj.quantity).trim();
+      return `${name}|${quantity}|${unit}`;
+    })
+    .filter(Boolean)
+    .sort();
+  return parts.join(';');
+}
 
 export async function POST(req: Request) {
   try {
@@ -35,30 +58,60 @@ export async function POST(req: Request) {
          return new NextResponse("You are not a member of this household", { status: 403 });
     }
 
-    // 2. Check if already imported
-    const existing = await db.select().from(meals).where(
-        and(
-            eq(meals.householdId, householdId),
-            eq(meals.fromGlobalMealId, globalMealId)
-        )
-    ).limit(1);
-
-    if (existing.length > 0) {
-        return NextResponse.json({
-            ...existing[0],
-            ingredients: existing[0].ingredients,
-            instructions: existing[0].instructions
-        });
-    }
-
-    // 3. Fetch global meal
+    // 2. Fetch global meal
     const globalMeal = await db.select().from(globalMeals).where(eq(globalMeals.id, globalMealId)).limit(1);
     if (globalMeal.length === 0) {
         return new NextResponse("Global meal not found", { status: 404 });
     }
     const gm = globalMeal[0];
 
-    // 4. Import
+    // 3. Check if already imported (by from_global_meal_id)
+    const existing = await db
+      .select()
+      .from(meals)
+      .where(and(eq(meals.householdId, householdId), eq(meals.fromGlobalMealId, gm.id)))
+      .limit(1);
+
+    if (existing.length > 0) {
+      return NextResponse.json({
+        ...existing[0],
+        ingredients: existing[0].ingredients,
+        instructions: existing[0].instructions,
+      });
+    }
+
+    // 4. Repair legacy imports:
+    // If a meal was previously "copied" from global meals (same name + ingredients) but didn't set from_global_meal_id,
+    // update that row instead of inserting another duplicate.
+    const legacyCandidates = await db
+      .select()
+      .from(meals)
+      .where(and(eq(meals.householdId, householdId), eq(meals.name, gm.name), isNull(meals.fromGlobalMealId)));
+
+    const gmKey = canonicalIngredientsKey(gm.ingredients);
+    const legacyMatch = legacyCandidates.find((m) => canonicalIngredientsKey(m.ingredients) === gmKey);
+
+    if (legacyMatch) {
+      const updated = {
+        fromGlobalMealId: gm.id,
+        description: gm.description,
+        ingredients: gm.ingredients,
+        instructions: gm.instructions,
+        image: gm.image,
+        cuisine: gm.cuisine,
+      };
+
+      await db.update(meals).set(updated).where(eq(meals.id, legacyMatch.id));
+
+      return NextResponse.json({
+        ...legacyMatch,
+        ...updated,
+        ingredients: gm.ingredients,
+        instructions: gm.instructions,
+      });
+    }
+
+    // 5. Import
     const newMeal = {
         id: uuidv4(),
         householdId,
