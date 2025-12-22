@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
+import { normalizeCuisine, normalizeIngredients, normalizeMealName } from '@/lib/normalizeMeal';
 import { db } from '../../../db';
 import { meals, household_members } from '../../../db/schema';
-import { eq, inArray, and, isNull } from 'drizzle-orm';
+import { eq, inArray, and, isNull, sql } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 
 function normalizeText(value: unknown): string {
@@ -79,8 +80,10 @@ export async function POST(req: Request) {
     const body = await req.json();
 
     const householdId = typeof body?.householdId === 'string' ? body.householdId : '';
-    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    const name = normalizeMealName(body?.name) ?? '';
     const fromGlobalMealId = typeof body?.fromGlobalMealId === 'string' ? body.fromGlobalMealId : null;
+    const normalizedIngredients = normalizeIngredients(body?.ingredients);
+    const normalizedCuisine = normalizeCuisine(body?.cuisine);
 
     if (!householdId || !name) {
       return new NextResponse("Missing required fields", { status: 400 });
@@ -120,21 +123,19 @@ export async function POST(req: Request) {
           and(
             eq(meals.householdId, householdId),
             eq(meals.createdBy, userId),
-            eq(meals.name, name),
             isNull(meals.fromGlobalMealId),
+            sql`lower(${meals.name}) = ${name.toLowerCase()}`,
           ),
         );
 
-      const bodyKey = canonicalIngredientsKey(body?.ingredients);
-      if (bodyKey) {
-        const match = candidates.find((m) => canonicalIngredientsKey(m.ingredients) === bodyKey);
-        if (match) {
-          return NextResponse.json({
-            ...match,
-            ingredients: match.ingredients,
-            instructions: match.instructions,
-          });
-        }
+      const bodyKey = canonicalIngredientsKey(normalizedIngredients);
+      const match = candidates.find((m) => canonicalIngredientsKey(m.ingredients) === bodyKey);
+      if (match) {
+        return NextResponse.json({
+          ...match,
+          ingredients: match.ingredients,
+          instructions: match.instructions,
+        });
       }
     }
     
@@ -145,14 +146,14 @@ export async function POST(req: Request) {
       householdId,
       name,
       description: typeof body?.description === 'string' ? body.description : undefined,
-      ingredients: Array.isArray(body?.ingredients) ? body.ingredients : [],
+      ingredients: Array.isArray(normalizedIngredients) ? normalizedIngredients : [],
       instructions: Array.isArray(body?.instructions) ? body.instructions : [],
       fromGlobalMealId,
       rating: typeof body?.rating === 'number' ? body.rating : undefined,
       isFavorite: typeof body?.isFavorite === 'boolean' ? body.isFavorite : undefined,
       userNotes: typeof body?.userNotes === 'string' ? body.userNotes : undefined,
       image: typeof body?.image === 'string' ? body.image : undefined,
-      cuisine: typeof body?.cuisine === 'string' ? body.cuisine : undefined,
+      cuisine: normalizedCuisine,
       createdBy: userId, // Enforce creator
       createdAt: new Date(),
     };

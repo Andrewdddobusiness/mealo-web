@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
+import { normalizeCuisine, normalizeIngredients, normalizeMealName } from '@/lib/normalizeMeal';
 import { db } from '../../../../db';
 import { meals, household_members } from '../../../../db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -43,12 +44,12 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       body as Partial<typeof meals.$inferInsert>;
     const updateData: Partial<typeof meals.$inferInsert> = {};
     
-    if (name !== undefined) updateData.name = name;
+    if (name !== undefined) updateData.name = normalizeMealName(name) ?? name;
     if (description !== undefined) updateData.description = description;
-    if (ingredients !== undefined) updateData.ingredients = ingredients;
+    if (ingredients !== undefined) updateData.ingredients = normalizeIngredients(ingredients) as typeof ingredients;
     if (instructions !== undefined) updateData.instructions = instructions;
     if (image !== undefined) updateData.image = image;
-    if (cuisine !== undefined) updateData.cuisine = cuisine;
+    if (cuisine !== undefined) updateData.cuisine = normalizeCuisine(cuisine) ?? cuisine;
     if (rating !== undefined) updateData.rating = rating;
     if (isFavorite !== undefined) updateData.isFavorite = isFavorite;
     if (userNotes !== undefined) updateData.userNotes = userNotes;

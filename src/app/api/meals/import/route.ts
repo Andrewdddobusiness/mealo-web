@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
+import { normalizeCuisine, normalizeIngredients, normalizeMealName } from '@/lib/normalizeMeal';
 import { db } from '../../../../db';
 import { meals, globalMeals, household_members } from '../../../../db/schema';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and, isNull, sql } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 
 function normalizeText(value: unknown): string {
@@ -64,6 +65,9 @@ export async function POST(req: Request) {
         return new NextResponse("Global meal not found", { status: 404 });
     }
     const gm = globalMeal[0];
+    const normalizedName = normalizeMealName(gm.name) ?? gm.name;
+    const normalizedIngredients = normalizeIngredients(gm.ingredients);
+    const normalizedCuisine = normalizeCuisine(gm.cuisine);
 
     // 3. Check if already imported (by from_global_meal_id)
     const existing = await db
@@ -86,19 +90,27 @@ export async function POST(req: Request) {
     const legacyCandidates = await db
       .select()
       .from(meals)
-      .where(and(eq(meals.householdId, householdId), eq(meals.name, gm.name), isNull(meals.fromGlobalMealId)));
+      .where(
+        and(
+          eq(meals.householdId, householdId),
+          eq(meals.createdBy, userId),
+          isNull(meals.fromGlobalMealId),
+          sql`lower(${meals.name}) = ${normalizedName.toLowerCase()}`,
+        ),
+      );
 
-    const gmKey = canonicalIngredientsKey(gm.ingredients);
+    const gmKey = canonicalIngredientsKey(normalizedIngredients);
     const legacyMatch = legacyCandidates.find((m) => canonicalIngredientsKey(m.ingredients) === gmKey);
 
     if (legacyMatch) {
       const updated = {
+        name: normalizedName,
         fromGlobalMealId: gm.id,
         description: gm.description,
-        ingredients: gm.ingredients,
+        ingredients: Array.isArray(normalizedIngredients) ? normalizedIngredients : gm.ingredients,
         instructions: gm.instructions,
         image: gm.image,
-        cuisine: gm.cuisine,
+        cuisine: normalizedCuisine ?? gm.cuisine,
       };
 
       await db.update(meals).set(updated).where(eq(meals.id, legacyMatch.id));
@@ -106,7 +118,7 @@ export async function POST(req: Request) {
       return NextResponse.json({
         ...legacyMatch,
         ...updated,
-        ingredients: gm.ingredients,
+        ingredients: updated.ingredients,
         instructions: gm.instructions,
       });
     }
@@ -115,12 +127,12 @@ export async function POST(req: Request) {
     const newMeal = {
         id: uuidv4(),
         householdId,
-        name: gm.name,
+        name: normalizedName,
         description: gm.description,
-        ingredients: gm.ingredients,
+        ingredients: Array.isArray(normalizedIngredients) ? normalizedIngredients : gm.ingredients,
         instructions: gm.instructions,
         image: gm.image,
-        cuisine: gm.cuisine,
+        cuisine: normalizedCuisine ?? gm.cuisine,
         fromGlobalMealId: gm.id,
         rating: 0,
         isFavorite: false,
