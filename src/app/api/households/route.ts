@@ -3,7 +3,7 @@ import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { ensureDbUser } from '@/lib/ensureDbUser';
 import { db } from '../../../db';
 import { households, household_members, users, plans } from '../../../db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 
 export async function GET(req: Request) {
@@ -99,6 +99,7 @@ export async function POST(req: Request) {
     await ensureDbUser(userId);
 
     const id = uuidv4();
+    const now = new Date();
     const newHousehold = {
       id,
       name,
@@ -107,21 +108,69 @@ export async function POST(req: Request) {
       memberIds: [userId],
       shoppingList: [],
       currency: 'USD',
-      createdAt: new Date(),
+      createdAt: now,
     };
 
-    await database.transaction(async (tx) => {
-      await tx.insert(households).values(newHousehold);
-      await tx.insert(household_members).values({
-        id: uuidv4(),
-        householdId: id,
-        userId,
-        role: 'owner',
-        joinedAt: new Date(),
-      });
-    });
+    // neon-http (HTTP) driver does not support multi-statement transactions.
+    // Use a single atomic SQL statement (CTEs) so both inserts succeed or fail together.
+    const insertResult = await database.execute(sql`
+      WITH inserted_household AS (
+        INSERT INTO households (
+          id,
+          name,
+          owner_id,
+          created_by,
+          member_ids,
+          shopping_list,
+          currency,
+          created_at
+        )
+        VALUES (
+          ${id},
+          ${name},
+          ${userId},
+          ${userId},
+          ${JSON.stringify([userId])}::jsonb,
+          ${JSON.stringify([])}::jsonb,
+          ${'USD'},
+          ${now}
+        )
+        RETURNING *
+      ),
+      inserted_member AS (
+        INSERT INTO household_members (
+          id,
+          household_id,
+          user_id,
+          role,
+          joined_at
+        )
+        SELECT
+          ${uuidv4()},
+          inserted_household.id,
+          ${userId},
+          'owner',
+          ${now}
+        FROM inserted_household
+        RETURNING 1
+      )
+      SELECT
+        id,
+        name,
+        owner_id AS "ownerId",
+        created_by AS "createdBy",
+        member_ids AS "memberIds",
+        current_period_start AS "currentPeriodStart",
+        current_period_end AS "currentPeriodEnd",
+        shopping_list AS "shoppingList",
+        currency,
+        created_at AS "createdAt"
+      FROM inserted_household;
+    `);
 
-    return NextResponse.json(newHousehold);
+    const insertedHousehold = insertResult.rows?.[0] ?? newHousehold;
+
+    return NextResponse.json(insertedHousehold);
 
   } catch (error) {
     console.error('[HOUSEHOLDS_POST]', error);
