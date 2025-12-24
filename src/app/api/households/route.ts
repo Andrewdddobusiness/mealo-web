@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
+import { ensureDbUser } from '@/lib/ensureDbUser';
 import { db } from '../../../db';
 import { households, household_members, users, plans } from '../../../db/schema';
 import { eq, inArray } from 'drizzle-orm';
@@ -94,6 +95,9 @@ export async function POST(req: Request) {
       return new NextResponse("Name is required", { status: 400 });
     }
 
+    // Ensure the authenticated user exists in the DB before inserting FK-dependent rows.
+    await ensureDbUser(userId);
+
     const id = uuidv4();
     const newHousehold = {
       id,
@@ -106,21 +110,25 @@ export async function POST(req: Request) {
       createdAt: new Date(),
     };
 
-    // Transaction-like operations
-    await database.insert(households).values(newHousehold);
-    
-    await database.insert(household_members).values({
+    await database.transaction(async (tx) => {
+      await tx.insert(households).values(newHousehold);
+      await tx.insert(household_members).values({
         id: uuidv4(),
         householdId: id,
-        userId: userId,
+        userId,
         role: 'owner',
-        joinedAt: new Date()
+        joinedAt: new Date(),
+      });
     });
 
     return NextResponse.json(newHousehold);
 
   } catch (error) {
     console.error('[HOUSEHOLDS_POST]', error);
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code === "23503") {
+      return new NextResponse("Missing required user record", { status: 409 });
+    }
     return new NextResponse("Internal Error", { status: 500 });
   }
 }
