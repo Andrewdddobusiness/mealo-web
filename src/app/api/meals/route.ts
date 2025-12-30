@@ -3,7 +3,7 @@ import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { normalizeCuisine, normalizeIngredients, normalizeMealName } from '@/lib/normalizeMeal';
 import { db } from '../../../db';
 import { meals, household_members } from '../../../db/schema';
-import { eq, inArray, and, isNull, sql } from 'drizzle-orm';
+import { eq, and, isNull, sql } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 
 function normalizeText(value: unknown): string {
@@ -40,22 +40,37 @@ export async function GET(req: Request) {
         return new NextResponse("Database not configured", { status: 500 });
     }
 
-    // 1. Get user's households to filter meals
-    const memberships = await db.select().from(household_members).where(eq(household_members.userId, userId));
-    const householdIds = memberships.map(m => m.householdId);
-
-    if (householdIds.length === 0) {
-        return NextResponse.json([]);
-    }
-
-    // 2. Fetch meals only for those households
-    const userMeals = await db.select().from(meals).where(inArray(meals.householdId, householdIds));
+    // Fetch all meals in households the user belongs to (member OR owner), in one round trip.
+    // Note: We alias snake_case DB columns to the camelCase shape used by the mobile app.
+    const mealsResult = await db.execute(sql`
+      SELECT
+        m.id,
+        m.household_id AS "householdId",
+        m.name,
+        m.description,
+        m.created_by AS "createdBy",
+        m.ingredients,
+        m.instructions,
+        m.from_global_meal_id AS "fromGlobalMealId",
+        m.rating,
+        m.is_favorite AS "isFavorite",
+        m.user_notes AS "userNotes",
+        m.image,
+        m.cuisine,
+        m.created_at AS "createdAt"
+      FROM meals m
+      WHERE m.household_id IN (
+        SELECT household_id FROM household_members WHERE user_id = ${userId}
+        UNION
+        SELECT id FROM households WHERE owner_id = ${userId}
+      );
+    `);
 
     // 3. Format for client
-    const formattedMeals = userMeals.map(m => ({
-        ...m,
-        ingredients: m.ingredients,
-        instructions: m.instructions
+    const formattedMeals = (mealsResult.rows ?? []).map((m) => ({
+      ...m,
+      ingredients: (m as any).ingredients,
+      instructions: (m as any).instructions,
     }));
 
     return NextResponse.json(formattedMeals);

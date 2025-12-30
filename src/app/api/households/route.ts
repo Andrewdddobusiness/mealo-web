@@ -18,55 +18,80 @@ export async function GET(req: Request) {
     }
     const database = db;
 
-    // 1. Get households where user is a member
-    const memberships = await database.select().from(household_members).where(eq(household_members.userId, userId));
-    const householdIds = memberships.map(m => m.householdId);
-
-    // 2. Also fetch owned households (legacy/safety)
-    const ownedHouseholds = await database.select().from(households).where(eq(households.createdBy, userId));
-    const ownedIds = ownedHouseholds.map(h => h.id);
-
-    const allIds = Array.from(new Set([...householdIds, ...ownedIds]));
+    // 1) Resolve household ids (member OR owner) in one round trip.
+    // We keep the owner fallback for legacy data where household_members might be missing.
+    const idResult = await database.execute(sql`
+      SELECT household_id AS id FROM household_members WHERE user_id = ${userId}
+      UNION
+      SELECT id FROM households WHERE owner_id = ${userId}
+    `);
+    const allIds = Array.from(
+      new Set(
+        (idResult.rows ?? [])
+          .map((row) => (row as { id?: unknown }).id)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0),
+      ),
+    );
 
     if (allIds.length === 0) {
       return NextResponse.json([]);
     }
 
-    // 3. Fetch household details
-    const userHouseholds = await database.select().from(households).where(inArray(households.id, allIds));
-
-    // 4. Enrich with members and plans (similar to mobile logic)
-    const householdsWithDetails = await Promise.all(userHouseholds.map(async (h) => {
-        const householdPlans = await database.select().from(plans).where(eq(plans.householdId, h.id));
-        
-        const membersRel = await database.select({
-            user: users,
-            role: household_members.role
+    // 2) Fetch household details + related data in bulk (avoid N+1 queries).
+    const [userHouseholds, allPlans, membersRel] = await Promise.all([
+      database.select().from(households).where(inArray(households.id, allIds)),
+      database.select().from(plans).where(inArray(plans.householdId, allIds)),
+      database
+        .select({
+          householdId: household_members.householdId,
+          user: users,
+          role: household_members.role,
         })
         .from(household_members)
         .innerJoin(users, eq(household_members.userId, users.id))
-        .where(eq(household_members.householdId, h.id));
+        .where(inArray(household_members.householdId, allIds)),
+    ]);
 
-        const members = membersRel.map(m => ({
-            id: m.user.id,
-            name: m.user.name,
-            email: m.user.email,
-            avatarUrl: m.user.avatar,
-            role: m.role
-        }));
+    const plansByHouseholdId = new Map<string, typeof allPlans>();
+    for (const plan of allPlans) {
+      const list = plansByHouseholdId.get(plan.householdId) ?? [];
+      list.push({
+        ...plan,
+        isCompleted: plan.isCompleted ?? false,
+      });
+      plansByHouseholdId.set(plan.householdId, list);
+    }
 
-        return {
-            ...h,
-            memberIds: members.map(m => m.id),
-            shoppingList: h.shoppingList,
-            plannedMeals: householdPlans.map(p => ({
-                ...p,
-                isCompleted: p.isCompleted ?? false,
-                createdAt: p.createdAt
-            })),
-            members: members
-        };
-    }));
+    const membersByHouseholdId = new Map<
+      string,
+      Array<{ id: string; name: string; email: string; avatarUrl: string | null; role: string }>
+    >();
+    for (const row of membersRel) {
+      const list = membersByHouseholdId.get(row.householdId) ?? [];
+      list.push({
+        id: row.user.id,
+        name: row.user.name,
+        email: row.user.email,
+        avatarUrl: row.user.avatar,
+        role: row.role,
+      });
+      membersByHouseholdId.set(row.householdId, list);
+    }
+
+    const householdsWithDetails = userHouseholds.map((h) => {
+      const householdPlans = plansByHouseholdId.get(h.id) ?? [];
+      const members = membersByHouseholdId.get(h.id) ?? [];
+      return {
+        ...h,
+        memberIds: members.map((m) => m.id),
+        shoppingList: h.shoppingList,
+        plannedMeals: householdPlans.map((p) => ({
+          ...p,
+          createdAt: p.createdAt,
+        })),
+        members,
+      };
+    });
 
     return NextResponse.json(householdsWithDetails);
 
