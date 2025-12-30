@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
+import { recordIngredientUsage } from '@/lib/ingredients';
 import { normalizeCuisine, normalizeIngredients, normalizeMealName } from '@/lib/normalizeMeal';
 import { db } from '../../../../db';
 import { meals, household_members } from '../../../../db/schema';
@@ -59,6 +60,14 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
 
     await db.update(meals).set(updateData).where(eq(meals.id, id));
+
+    if (updateData.ingredients !== undefined) {
+      try {
+        await recordIngredientUsage(db, userId, updateData.ingredients);
+      } catch (error) {
+        console.error('[MEAL_PUT_INGREDIENT_USAGE]', error);
+      }
+    }
 
     return NextResponse.json({ success: true });
 

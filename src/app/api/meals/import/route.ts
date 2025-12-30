@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
+import { recordIngredientUsage } from '@/lib/ingredients';
 import { normalizeCuisine, normalizeIngredients, normalizeMealName } from '@/lib/normalizeMeal';
 import { db } from '../../../../db';
 import { meals, globalMeals, household_members } from '../../../../db/schema';
@@ -77,6 +78,12 @@ export async function POST(req: Request) {
       .limit(1);
 
     if (existing.length > 0) {
+      try {
+        await recordIngredientUsage(db, userId, existing[0].ingredients);
+      } catch (error) {
+        console.error('[MEAL_IMPORT_EXISTING_INGREDIENT_USAGE]', error);
+      }
+
       return NextResponse.json({
         ...existing[0],
         ingredients: existing[0].ingredients,
@@ -115,6 +122,12 @@ export async function POST(req: Request) {
 
       await db.update(meals).set(updated).where(eq(meals.id, legacyMatch.id));
 
+      try {
+        await recordIngredientUsage(db, userId, updated.ingredients);
+      } catch (error) {
+        console.error('[MEAL_IMPORT_LEGACY_INGREDIENT_USAGE]', error);
+      }
+
       return NextResponse.json({
         ...legacyMatch,
         ...updated,
@@ -141,6 +154,12 @@ export async function POST(req: Request) {
     };
 
     await db.insert(meals).values(newMeal);
+
+    try {
+      await recordIngredientUsage(db, userId, newMeal.ingredients);
+    } catch (error) {
+      console.error('[MEAL_IMPORT_POST_INGREDIENT_USAGE]', error);
+    }
 
     return NextResponse.json(newMeal);
 

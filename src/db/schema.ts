@@ -116,3 +116,24 @@ export const subscriptions = pgTable('subscriptions', {
   autoRenewStatus: boolean('auto_renew_status').default(true),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
+
+export const ingredients = pgTable(
+  'ingredients',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    nameNormalized: text('name_normalized').notNull(),
+    category: text('category'),
+    isGlobal: boolean('is_global').notNull().default(false),
+    createdBy: text('created_by').references(() => users.id, { onDelete: 'cascade' }),
+    useCount: integer('use_count').notNull().default(0),
+    lastUsedAt: timestamp('last_used_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+  },
+  (table) => ({
+    nameNormalizedIdx: index('ingredients_name_normalized_idx').on(table.nameNormalized),
+    createdByIdx: index('ingredients_created_by_idx').on(table.createdBy),
+    globalIdx: index('ingredients_is_global_idx').on(table.isGlobal),
+  }),
+);

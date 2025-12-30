@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
+import { recordIngredientUsage } from '@/lib/ingredients';
 import { normalizeCuisine, normalizeIngredients, normalizeMealName } from '@/lib/normalizeMeal';
 import { db } from '../../../db';
 import { meals, household_members } from '../../../db/schema';
@@ -174,6 +175,12 @@ export async function POST(req: Request) {
     };
 
     await db.insert(meals).values(newMeal);
+
+    try {
+      await recordIngredientUsage(db, userId, newMeal.ingredients);
+    } catch (error) {
+      console.error('[MEALS_POST_INGREDIENT_USAGE]', error);
+    }
 
     return NextResponse.json(newMeal);
 
