@@ -51,7 +51,7 @@ WITH extracted AS (
 normalized AS (
   SELECT
     trim(regexp_replace(lower(name), '\s+', ' ', 'g')) AS name_normalized,
-    MIN(trim(regexp_replace(name, '\s+', ' ', 'g'))) AS display_name,
+    initcap(trim(regexp_replace(lower(name), '\s+', ' ', 'g'))) AS display_name,
     MAX(NULLIF(trim(category), '')) AS category
   FROM extracted
   WHERE name IS NOT NULL AND btrim(name) <> ''
@@ -68,7 +68,13 @@ SELECT
   0,
   NULL
 FROM normalized
-ON CONFLICT (name_normalized) WHERE (is_global = true) DO NOTHING;
+ON CONFLICT (name_normalized) WHERE (is_global = true) DO UPDATE SET
+  name = CASE
+    WHEN ingredients.name = lower(ingredients.name) THEN EXCLUDED.name
+    ELSE ingredients.name
+  END,
+  category = COALESCE(ingredients.category, EXCLUDED.category),
+  updated_at = now();
 
 -- Optional: Backfill per-user suggestions from existing meals (helps autocomplete immediately).
 WITH extracted AS (
@@ -91,7 +97,7 @@ normalized AS (
   SELECT
     user_id,
     trim(regexp_replace(lower(name), '\s+', ' ', 'g')) AS name_normalized,
-    MIN(trim(regexp_replace(name, '\s+', ' ', 'g'))) AS display_name,
+    initcap(trim(regexp_replace(lower(name), '\s+', ' ', 'g'))) AS display_name,
     MAX(NULLIF(trim(category), '')) AS category,
     COUNT(*)::int AS use_count
   FROM extracted
@@ -110,7 +116,10 @@ SELECT
   now()
 FROM normalized
 ON CONFLICT (created_by, name_normalized) WHERE (is_global = false) DO UPDATE SET
-  name = EXCLUDED.name,
+  name = CASE
+    WHEN ingredients.name = lower(ingredients.name) THEN EXCLUDED.name
+    ELSE ingredients.name
+  END,
   category = COALESCE(EXCLUDED.category, ingredients.category),
   use_count = GREATEST(ingredients.use_count, EXCLUDED.use_count),
   last_used_at = COALESCE(ingredients.last_used_at, EXCLUDED.last_used_at),

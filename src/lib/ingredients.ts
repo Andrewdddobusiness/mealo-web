@@ -95,6 +95,11 @@ export async function recordIngredientUsage(
     global_update AS (
       UPDATE ingredients g
       SET
+        name = CASE
+          WHEN g.name = lower(g.name) OR g.name = initcap(g.name_normalized) THEN i.name
+          ELSE g.name
+        END,
+        category = COALESCE(g.category, i.category),
         use_count = g.use_count + 1,
         last_used_at = now(),
         updated_at = now()
@@ -107,4 +112,3 @@ export async function recordIngredientUsage(
            (SELECT count(*) FROM global_update) AS global_updates;
   `);
 }
-
