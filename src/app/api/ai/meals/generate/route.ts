@@ -1,0 +1,106 @@
+import { NextResponse } from 'next/server';
+import { eq } from 'drizzle-orm';
+import { randomUUID } from 'crypto';
+
+import { getUserIdFromRequest } from '@/lib/requestAuth';
+import { db } from '@/db';
+import { subscriptions } from '@/db/schema';
+import {
+  AiConfigError,
+  AiProviderError,
+  AiTimeoutError,
+  AiValidationError,
+  generateMeal,
+  validateGenerateMealInput,
+} from '@/lib/ai/generateMeal';
+
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 10;
+const rateLimitByUser = new Map<string, { resetAtMs: number; count: number }>();
+
+function jsonError(status: number, code: string, message: string, requestId: string) {
+  const res = NextResponse.json({ error: { code, message, requestId } }, { status });
+  res.headers.set('x-request-id', requestId);
+  return res;
+}
+
+export async function POST(req: Request) {
+  const requestId = randomUUID();
+
+  try {
+    const userId = await getUserIdFromRequest(req);
+    if (!userId) {
+      return jsonError(401, 'unauthorized', 'You must be signed in to generate a meal.', requestId);
+    }
+
+    if (!db) {
+      return jsonError(500, 'server_misconfigured', 'Database is not configured.', requestId);
+    }
+
+    const [sub] = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).limit(1);
+    if (!sub?.isActive) {
+      return jsonError(402, 'subscription_required', 'Upgrade to Pro to use AI meal generation.', requestId);
+    }
+
+    const nowMs = Date.now();
+    const existing = rateLimitByUser.get(userId);
+    if (!existing || existing.resetAtMs <= nowMs) {
+      rateLimitByUser.set(userId, { resetAtMs: nowMs + RATE_LIMIT_WINDOW_MS, count: 1 });
+    } else if (existing.count >= RATE_LIMIT_MAX_REQUESTS) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((existing.resetAtMs - nowMs) / 1000));
+      const res = jsonError(
+        429,
+        'rate_limited',
+        `Too many requests. Try again in ${retryAfterSeconds}s.`,
+        requestId,
+      );
+      res.headers.set('retry-after', String(retryAfterSeconds));
+      return res;
+    } else {
+      existing.count += 1;
+      rateLimitByUser.set(userId, existing);
+    }
+
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object') {
+      return jsonError(400, 'invalid_request', 'Invalid JSON body.', requestId);
+    }
+
+    let sanitizedInput: ReturnType<typeof validateGenerateMealInput>;
+    try {
+      sanitizedInput = validateGenerateMealInput(body as any);
+    } catch (error) {
+      if (error instanceof AiValidationError) {
+        return jsonError(400, 'invalid_request', error.message, requestId);
+      }
+      throw error;
+    }
+
+    const generated = await generateMeal(sanitizedInput);
+
+    const res = NextResponse.json({ meal: generated }, { status: 200 });
+    res.headers.set('x-request-id', requestId);
+    res.headers.set('cache-control', 'no-store');
+    return res;
+  } catch (error) {
+    if (error instanceof AiTimeoutError) {
+      return jsonError(504, 'ai_timeout', 'AI provider timed out. Please try again.', requestId);
+    }
+
+    if (error instanceof AiProviderError) {
+      return jsonError(502, 'ai_provider_error', 'AI provider error. Please try again.', requestId);
+    }
+
+    if (error instanceof AiValidationError) {
+      return jsonError(502, 'invalid_ai_response', error.message, requestId);
+    }
+
+    if (error instanceof AiConfigError) {
+      console.error('[AI_GENERATE_MEAL_CONFIG]', { requestId, error });
+      return jsonError(500, 'server_misconfigured', 'AI provider is not configured.', requestId);
+    }
+
+    console.error('[AI_GENERATE_MEAL]', { requestId, error });
+    return jsonError(500, 'internal_error', 'Something went wrong generating your meal.', requestId);
+  }
+}
