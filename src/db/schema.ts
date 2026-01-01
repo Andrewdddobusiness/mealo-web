@@ -149,6 +149,8 @@ export const feedbackSubmissions = pgTable(
     description: text('description').notNull(),
     type: text('type').notNull(), // "feature" | "bug"
     status: text('status').notNull().default('open'), // "open" | "planned" | "in_progress" | "done"
+    editCount: integer('edit_count').notNull().default(0),
+    lastEditedAt: timestamp('last_edited_at'),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
   },

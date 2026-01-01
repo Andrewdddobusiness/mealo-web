@@ -12,6 +12,13 @@ CREATE TABLE IF NOT EXISTS public.feedback_submissions (
   updated_at timestamp NOT NULL DEFAULT now()
 );
 
+-- Edit tracking (safe to run multiple times)
+ALTER TABLE public.feedback_submissions
+  ADD COLUMN IF NOT EXISTS edit_count integer NOT NULL DEFAULT 0;
+
+ALTER TABLE public.feedback_submissions
+  ADD COLUMN IF NOT EXISTS last_edited_at timestamp;
+
 CREATE INDEX IF NOT EXISTS feedback_submissions_created_at_idx
   ON public.feedback_submissions (created_at);
 
@@ -53,4 +60,3 @@ CREATE INDEX IF NOT EXISTS feedback_comments_submission_id_idx
 
 CREATE INDEX IF NOT EXISTS feedback_comments_created_at_idx
   ON public.feedback_comments (created_at);
-
