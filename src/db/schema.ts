@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, boolean, jsonb, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, integer, boolean, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
   id: text('id').primaryKey(),
@@ -135,5 +135,65 @@ export const ingredients = pgTable(
     nameNormalizedIdx: index('ingredients_name_normalized_idx').on(table.nameNormalized),
     createdByIdx: index('ingredients_created_by_idx').on(table.createdBy),
     globalIdx: index('ingredients_is_global_idx').on(table.isGlobal),
+  }),
+);
+
+export const feedbackSubmissions = pgTable(
+  'feedback_submissions',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    title: text('title').notNull(),
+    description: text('description').notNull(),
+    type: text('type').notNull(), // "feature" | "bug"
+    status: text('status').notNull().default('open'), // "open" | "planned" | "in_progress" | "done"
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+  },
+  (table) => ({
+    createdAtIdx: index('feedback_submissions_created_at_idx').on(table.createdAt),
+    userIdx: index('feedback_submissions_user_id_idx').on(table.userId),
+    typeIdx: index('feedback_submissions_type_idx').on(table.type),
+    statusIdx: index('feedback_submissions_status_idx').on(table.status),
+  }),
+);
+
+export const feedbackVotes = pgTable(
+  'feedback_votes',
+  {
+    id: text('id').primaryKey(),
+    submissionId: text('submission_id')
+      .references(() => feedbackSubmissions.id, { onDelete: 'cascade' })
+      .notNull(),
+    userId: text('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+  (table) => ({
+    submissionIdx: index('feedback_votes_submission_id_idx').on(table.submissionId),
+    userIdx: index('feedback_votes_user_id_idx').on(table.userId),
+    uniqueVoteIdx: uniqueIndex('feedback_votes_submission_id_user_id_uniq').on(table.submissionId, table.userId),
+  }),
+);
+
+export const feedbackComments = pgTable(
+  'feedback_comments',
+  {
+    id: text('id').primaryKey(),
+    submissionId: text('submission_id')
+      .references(() => feedbackSubmissions.id, { onDelete: 'cascade' })
+      .notNull(),
+    userId: text('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+  (table) => ({
+    submissionIdx: index('feedback_comments_submission_id_idx').on(table.submissionId),
+    createdAtIdx: index('feedback_comments_created_at_idx').on(table.createdAt),
   }),
 );
