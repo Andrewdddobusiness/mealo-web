@@ -1,10 +1,8 @@
 import { NextResponse } from 'next/server';
-import { eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { db } from '@/db';
-import { subscriptions } from '@/db/schema';
 import {
   AiConfigError,
   AiProviderError,
@@ -13,14 +11,22 @@ import {
   generateMeal,
   validateGenerateMealInput,
 } from '@/lib/ai/generateMeal';
+import { requireProSubscriptionForAi, SubscriptionRequiredError } from '@/lib/ai/requireProSubscription';
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 10;
 const rateLimitByUser = new Map<string, { resetAtMs: number; count: number }>();
 
-function jsonError(status: number, code: string, message: string, requestId: string) {
-  const res = NextResponse.json({ error: { code, message, requestId } }, { status });
+function jsonError(
+  status: number,
+  error: string,
+  message: string,
+  requestId: string,
+  meta?: Record<string, unknown>,
+) {
+  const res = NextResponse.json({ error, message, requestId, ...meta }, { status });
   res.headers.set('x-request-id', requestId);
+  res.headers.set('cache-control', 'no-store');
   return res;
 }
 
@@ -37,10 +43,7 @@ export async function POST(req: Request) {
       return jsonError(500, 'server_misconfigured', 'Database is not configured.', requestId);
     }
 
-    const [sub] = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).limit(1);
-    if (!sub?.isActive) {
-      return jsonError(402, 'subscription_required', 'Upgrade to Pro to use AI meal generation.', requestId);
-    }
+    await requireProSubscriptionForAi(db, userId, 'ai_generate_meal');
 
     const nowMs = Date.now();
     const existing = rateLimitByUser.get(userId);
@@ -98,6 +101,16 @@ export async function POST(req: Request) {
     if (error instanceof AiConfigError) {
       console.error('[AI_GENERATE_MEAL_CONFIG]', { requestId, error });
       return jsonError(500, 'server_misconfigured', 'AI provider is not configured.', requestId);
+    }
+
+    if (error instanceof SubscriptionRequiredError) {
+      return jsonError(
+        error.status,
+        error.code,
+        'Upgrade to Pro to generate meals with AI.',
+        requestId,
+        { feature: error.feature },
+      );
     }
 
     console.error('[AI_GENERATE_MEAL]', { requestId, error });
