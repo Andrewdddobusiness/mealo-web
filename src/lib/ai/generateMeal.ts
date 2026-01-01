@@ -1,4 +1,4 @@
-import { normalizeCuisine, normalizeMealName, normalizeTitleCase, normalizeWhitespace } from '../normalizeMeal';
+import { normalizeMealName, normalizeTitleCase, normalizeWhitespace } from '../normalizeMeal';
 
 export type GenerateMealInput = {
   prompt: string;
@@ -11,12 +11,13 @@ export type GenerateMealInput = {
 export type GeneratedMealIngredient = {
   name: string;
   quantity?: number;
-  unit?: string;
+  unit: string;
   category?: string;
 };
 
 export type GeneratedMeal = {
   name: string;
+  cuisines?: string[];
   cuisine?: string;
   ingredients: GeneratedMealIngredient[];
 };
@@ -53,11 +54,194 @@ const MAX_OPTION_LENGTH = 80;
 const MAX_NAME_LENGTH = 80;
 const MAX_CUISINE_LENGTH = 40;
 
+const ALLOWED_CUISINES = [
+  'American',
+  'Italian',
+  'Mexican',
+  'Greek',
+  'French',
+  'Spanish',
+  'Mediterranean',
+  'Middle Eastern',
+  'Indian',
+  'Thai',
+  'Vietnamese',
+  'Chinese',
+  'Japanese',
+  'Korean',
+  'Brazilian',
+  'Caribbean',
+  'African',
+  'Vegetarian',
+  'Vegan',
+] as const;
+
+const ALLOWED_UNITS = [
+  'g',
+  'kg',
+  'oz',
+  'lb',
+  'ml',
+  'l',
+  'cup',
+  'tbsp',
+  'tsp',
+  'slice',
+  'loaf',
+  'piece',
+  'can',
+  'pkg',
+  'whole',
+] as const;
+
+const UNIT_SYNONYMS: Record<string, (typeof ALLOWED_UNITS)[number]> = {
+  gram: 'g',
+  grams: 'g',
+  kilogram: 'kg',
+  kilograms: 'kg',
+  ounce: 'oz',
+  ounces: 'oz',
+  pound: 'lb',
+  pounds: 'lb',
+  lbs: 'lb',
+  milliliter: 'ml',
+  milliliters: 'ml',
+  millilitre: 'ml',
+  millilitres: 'ml',
+  liter: 'l',
+  liters: 'l',
+  litre: 'l',
+  litres: 'l',
+  cups: 'cup',
+  tablespoon: 'tbsp',
+  tablespoons: 'tbsp',
+  teaspoon: 'tsp',
+  teaspoons: 'tsp',
+  slices: 'slice',
+  pieces: 'piece',
+  cans: 'can',
+  package: 'pkg',
+  packages: 'pkg',
+  pack: 'pkg',
+  packs: 'pkg',
+  stalk: 'piece',
+  stalks: 'piece',
+  stock: 'piece',
+  stocks: 'piece',
+};
+
+function normalizeKey(value: string): string {
+  return normalizeWhitespace(value).toLowerCase();
+}
+
+const CUISINE_BY_KEY = new Map<string, (typeof ALLOWED_CUISINES)[number]>(
+  ALLOWED_CUISINES.map((cuisine) => [normalizeKey(cuisine), cuisine]),
+);
+
+const UNIT_BY_KEY = new Map<string, (typeof ALLOWED_UNITS)[number]>(ALLOWED_UNITS.map((unit) => [normalizeKey(unit), unit]));
+
 function safeTrim(value: unknown, maxLen: number): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = normalizeWhitespace(value);
   if (!trimmed) return undefined;
   return trimmed.slice(0, maxLen);
+}
+
+function normalizeUnit(raw: unknown): (typeof ALLOWED_UNITS)[number] | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = normalizeWhitespace(raw);
+  if (!trimmed) return undefined;
+
+  const normalized = normalizeKey(trimmed.replace(/[()]/g, ' ').replace(/\./g, ' '));
+  const direct = UNIT_BY_KEY.get(normalized);
+  if (direct) return direct;
+
+  const synonym = UNIT_SYNONYMS[normalized];
+  if (synonym) return synonym;
+
+  return undefined;
+}
+
+function inferUnitFromIngredient(name: string, category?: string): (typeof ALLOWED_UNITS)[number] {
+  const key = normalizeKey(name);
+
+  // More specific name-based rules first.
+  if (/\b(oil|vinegar)\b/.test(key)) return 'tbsp';
+  if (/\b(soy sauce|fish sauce|oyster sauce)\b/.test(key)) return 'tbsp';
+  if (/\b(water|milk|cream|broth|stock|juice|wine)\b/.test(key)) return 'ml';
+  if (/\b(salt|pepper|spice|powder|seasoning|cinnamon|paprika|cumin|oregano|basil|chili)\b/.test(key)) return 'tsp';
+
+  if (/\b(loaf)\b/.test(key)) return 'loaf';
+  if (/\b(bread)\b/.test(key)) return 'slice';
+  if (/\b(egg|eggs)\b/.test(key)) return 'piece';
+  if (/\b(canned|tin)\b/.test(key)) return 'can';
+
+  // Category-based fallback.
+  const cat = normalizeKey(category ?? '');
+  if (cat === 'produce') return 'piece';
+  if (cat === 'bakery') return 'slice';
+  if (cat === 'meat') return 'g';
+  if (cat === 'dairy') return 'g';
+  if (cat === 'pantry') return 'g';
+
+  // Ingredient-name fallback for common solids.
+  if (/\b(rice|pasta|flour|sugar|cheese|beef|chicken|pork|fish|shrimp|tofu|quinoa|lentil|bean|butter)\b/.test(key)) {
+    return 'g';
+  }
+
+  // Safe default that works for many produce items (onions, herbs, etc.).
+  return 'piece';
+}
+
+function normalizeCuisines(raw: unknown): (typeof ALLOWED_CUISINES)[number][] {
+  const items: string[] = [];
+  if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      if (typeof entry === 'string') items.push(entry);
+    }
+  } else if (typeof raw === 'string') {
+    items.push(raw);
+  }
+
+  const out: (typeof ALLOWED_CUISINES)[number][] = [];
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    const normalizedText = normalizeKey(item);
+    if (!normalizedText) continue;
+
+    // If the model returns prose like "Japanese – Italian fusion", extract any known cuisines.
+    const embedded = ALLOWED_CUISINES.filter((cuisine) => normalizedText.includes(normalizeKey(cuisine)));
+    if (embedded.length > 0) {
+      for (const cuisine of embedded) {
+        const key = normalizeKey(cuisine);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(cuisine);
+        if (out.length >= 2) return out;
+      }
+      continue;
+    }
+
+    // Direct match or basic splitting fallbacks.
+    const parts = normalizedText
+      .replace(/[–—]/g, '-')
+      .split(/[,/|+&-]|\band\b/gi)
+      .map((p) => normalizeWhitespace(p))
+      .filter(Boolean);
+
+    for (const part of parts.length ? parts : [item]) {
+      const direct = CUISINE_BY_KEY.get(normalizeKey(part));
+      if (!direct) continue;
+      const key = normalizeKey(direct);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(direct);
+      if (out.length >= 2) return out;
+    }
+  }
+
+  return out;
 }
 
 function clampInt(value: unknown, min: number, max: number): number | undefined {
@@ -122,8 +306,8 @@ function normalizeIngredient(raw: unknown): GeneratedMealIngredient | null {
   const name = normalizeTitleCase(nameRaw).slice(0, MAX_NAME_LENGTH);
   if (!name) return null;
 
-  const unit = safeTrim(obj.unit, 16);
   const category = safeTrim(obj.category, 24);
+  const unit = normalizeUnit(obj.unit) ?? inferUnitFromIngredient(name, category);
 
   const quantity =
     typeof obj.quantity === 'number' && Number.isFinite(obj.quantity) && obj.quantity > 0 ? obj.quantity : undefined;
@@ -145,7 +329,8 @@ function validateGeneratedMeal(raw: unknown, maxIngredients: number): GeneratedM
   const name = normalizeMealName(obj.name)?.slice(0, MAX_NAME_LENGTH);
   if (!name) throw new AiValidationError('AI response is missing meal.name.');
 
-  const cuisine = normalizeCuisine(obj.cuisine)?.slice(0, MAX_CUISINE_LENGTH);
+  const cuisines = normalizeCuisines(obj.cuisines ?? obj.cuisine);
+  const cuisine = cuisines.length ? cuisines.join(', ').slice(0, MAX_CUISINE_LENGTH) : undefined;
 
   const ingredientsRaw = Array.isArray(obj.ingredients) ? obj.ingredients : [];
   const ingredients = ingredientsRaw.map(normalizeIngredient).filter(Boolean) as GeneratedMealIngredient[];
@@ -156,6 +341,7 @@ function validateGeneratedMeal(raw: unknown, maxIngredients: number): GeneratedM
 
   return {
     name,
+    cuisines: cuisines.length ? cuisines : undefined,
     cuisine,
     ingredients: ingredients.slice(0, Math.max(1, maxIngredients)),
   };
@@ -189,12 +375,14 @@ async function generateMealWithGemini(input: GenerateMealInput): Promise<Generat
     'You generate meal recipes for a meal planning app.',
     'Return ONLY valid JSON (no markdown, no code fences, no explanations).',
     'The JSON MUST match exactly this shape:',
-    '{ "meal": { "name": string, "cuisine": string|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string|null, "category": string|null } ] } }',
+    '{ "meal": { "name": string, "cuisines": string[]|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string, "category": string|null } ] } }',
     'Rules:',
+    `- cuisines must be null OR 1..2 items picked ONLY from: ${ALLOWED_CUISINES.join(', ')}`,
+    '- if the meal is a fusion, include multiple cuisines (max 2) rather than inventing a new cuisine name',
     `- ingredients must be 1..${maxIngredients} items`,
     '- each ingredient.name must be non-empty',
     '- prefer including quantity + unit for every ingredient',
-    '- unit should be a short string (e.g. g, kg, ml, cup, tbsp, tsp, slice, piece)',
+    `- unit must be one of: ${ALLOWED_UNITS.join(', ')} (never null; choose the closest match if unsure)`,
     '- category should be one of: Produce, Pantry, Meat, Dairy, Bakery, Other (or null)',
   ].join('\n');
 
@@ -258,4 +446,3 @@ export async function generateMeal(input: GenerateMealInput): Promise<GeneratedM
 
   throw new AiConfigError(`Unsupported AI provider: ${provider}`);
 }
-
