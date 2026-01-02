@@ -4,7 +4,7 @@ import type { NeonHttpDatabase } from 'drizzle-orm/neon-http';
 import * as schema from '@/db/schema';
 import { subscriptions } from '@/db/schema';
 
-export type AiFeature = 'ai_generate_meal';
+export type AiFeature = 'ai_generate_meal' | 'ai_scan_meal';
 
 type DbClient = NeonHttpDatabase<typeof schema>;
 

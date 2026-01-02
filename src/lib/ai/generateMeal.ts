@@ -276,7 +276,7 @@ function extractTextFromGemini(json: GeminiGenerateResponse): string {
   return parts.map((p) => (typeof p.text === 'string' ? p.text : '')).join('').trim();
 }
 
-function extractJsonObject(text: string): unknown {
+export function extractJsonObject(text: string): unknown {
   const trimmed = text.trim();
   if (!trimmed) throw new AiValidationError('AI returned an empty response.');
 
@@ -315,7 +315,7 @@ function normalizeIngredient(raw: unknown): GeneratedMealIngredient | null {
   return { name, quantity, unit, category };
 }
 
-function validateGeneratedMeal(raw: unknown, maxIngredients: number): GeneratedMeal {
+export function validateGeneratedMeal(raw: unknown, maxIngredients: number): GeneratedMeal {
   const root =
     raw && typeof raw === 'object' && (raw as any).meal && typeof (raw as any).meal === 'object'
       ? ((raw as any).meal as unknown)
