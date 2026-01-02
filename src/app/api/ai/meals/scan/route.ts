@@ -11,6 +11,7 @@ import {
 } from '@/lib/ai/generateMeal';
 import { scanMealFromImage } from '@/lib/ai/scanMeal';
 import { requireProSubscriptionForAi, SubscriptionRequiredError } from '@/lib/ai/requireProSubscription';
+import { AiUsageLimitError, consumeAiUsage } from '@/lib/ai/aiUsage';
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 6;
@@ -85,6 +86,8 @@ export async function POST(req: Request) {
 
     const maxIngredients = parseMaxIngredients(formData);
 
+    await consumeAiUsage(db, userId, 'ai_scan_meal');
+
     const bytes = Buffer.from(await file.arrayBuffer());
     const imageBase64 = bytes.toString('base64');
 
@@ -120,6 +123,25 @@ export async function POST(req: Request) {
       return jsonError(error.status, error.code, 'Upgrade to Pro to scan meals with AI.', requestId, {
         feature: error.feature,
       });
+    }
+
+    if (error instanceof AiUsageLimitError) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((error.period.endsAt.getTime() - Date.now()) / 1000));
+      const res = jsonError(
+        error.status,
+        error.code,
+        `Monthly AI limit reached. Try again after ${error.period.endsAt.toISOString()}.`,
+        requestId,
+        {
+          feature: error.feature,
+          period: error.period.key,
+          limit: error.limit,
+          used: error.used,
+          resetsAt: error.period.endsAt.toISOString(),
+        },
+      );
+      res.headers.set('retry-after', String(retryAfterSeconds));
+      return res;
     }
 
     console.error('[AI_SCAN_MEAL]', { requestId, error });

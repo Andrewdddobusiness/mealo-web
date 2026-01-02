@@ -117,6 +117,26 @@ export const subscriptions = pgTable('subscriptions', {
   updatedAt: timestamp('updated_at').defaultNow(),
 });
 
+export const aiUsage = pgTable(
+  'ai_usage',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    feature: text('feature').notNull(),
+    period: text('period').notNull(), // YYYY-MM (UTC)
+    used: integer('used').notNull().default(0),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+  },
+  (table) => ({
+    userPeriodIdx: index('ai_usage_user_id_period_idx').on(table.userId, table.period),
+    featureIdx: index('ai_usage_feature_idx').on(table.feature),
+    uniqueUsageIdx: uniqueIndex('ai_usage_user_feature_period_uniq').on(table.userId, table.feature, table.period),
+  }),
+);
+
 export const ingredients = pgTable(
   'ingredients',
   {
