@@ -23,7 +23,16 @@ export type ImportVideoMealInput = {
   maxRecipes?: number;
 };
 
-type ExtractedFrom = 'direct_video_url' | 'og_video_meta' | 'twitter_stream_meta';
+type ExtractedFrom =
+  | 'direct_video_url'
+  | 'og_video_meta'
+  | 'twitter_stream_meta'
+  | 'html_video_tag'
+  | 'html_mp4_url'
+  | 'tiktok_sigi_state'
+  | 'instagram_json'
+  | 'tiktok_embed_html'
+  | 'instagram_embed_html';
 
 type ResolvedImportContext = {
   url: string;
@@ -143,6 +152,88 @@ function decodeHtmlEntities(value: string): string {
     .replace(/&gt;/g, '>');
 }
 
+function isLikelyMp4Url(url: string): boolean {
+  return /\.mp4(?:$|[?#])/i.test(url);
+}
+
+function decodePossibleEscapes(value: string): string {
+  const trimmed = value.trim().replace(/^["']|["']$/g, '');
+  let out = decodeHtmlEntities(trimmed);
+  out = out
+    .replace(/\\\\u0026/g, '&')
+    .replace(/\\u0026/g, '&')
+    .replace(/\\\\u003d/g, '=')
+    .replace(/\\u003d/g, '=')
+    .replace(/\\\\u002f/gi, '/')
+    .replace(/\\u002f/gi, '/')
+    .replace(/\\\\\//g, '/')
+    .replace(/\\\//g, '/');
+  return out;
+}
+
+function extractUrlsFromText(text: string): string[] {
+  const out: string[] = [];
+  const urlRegex = /https?:\/\/[^\s"'<>\\]+/gi;
+  let match: RegExpExecArray | null;
+  while ((match = urlRegex.exec(text))) {
+    const raw = match[0];
+    if (!raw) continue;
+    out.push(raw);
+    if (out.length >= 25) break;
+  }
+  return out;
+}
+
+function extractVideoUrlFromVideoTags(html: string, baseUrl: string): string | null {
+  const tagRegex = /<(video|source)\b[^>]*\bsrc=(["'])(.*?)\2[^>]*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = tagRegex.exec(html))) {
+    const rawSrc = match[3];
+    if (!rawSrc) continue;
+    const decoded = decodePossibleEscapes(rawSrc);
+    try {
+      const resolved = new URL(decoded, baseUrl).toString();
+      if (isLikelyMp4Url(resolved)) return resolved;
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
+function extractVideoUrlFromEmbeddedJson(
+  html: string,
+  baseUrl: string,
+): { url: string; extractedFrom: ExtractedFrom } | null {
+  const patterns: Array<{ regex: RegExp; extractedFrom: ExtractedFrom }> = [
+    { regex: /"playAddr"\s*:\s*"([^"]+)"/gi, extractedFrom: 'tiktok_sigi_state' },
+    { regex: /"downloadAddr"\s*:\s*"([^"]+)"/gi, extractedFrom: 'tiktok_sigi_state' },
+    { regex: /"playUrl"\s*:\s*"([^"]+)"/gi, extractedFrom: 'tiktok_sigi_state' },
+    { regex: /"video_url"\s*:\s*"([^"]+)"/gi, extractedFrom: 'instagram_json' },
+    { regex: /"videoUrl"\s*:\s*"([^"]+)"/gi, extractedFrom: 'instagram_json' },
+    { regex: /"contentUrl"\s*:\s*"([^"]+)"/gi, extractedFrom: 'instagram_json' },
+  ];
+
+  for (const { regex, extractedFrom } of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(html))) {
+      const raw = match[1];
+      if (!raw) continue;
+      const decoded = decodePossibleEscapes(raw);
+      try {
+        const resolved = new URL(decoded, baseUrl).toString();
+        if (!resolved.startsWith('http')) continue;
+        if (!isLikelyMp4Url(resolved)) continue;
+        return { url: resolved, extractedFrom };
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return null;
+}
+
 export function validateImportVideoMealInput(input: ImportVideoMealInput): ImportVideoMealInput {
   const urlRaw = safeTrim(input.url, MAX_URL_LENGTH);
   if (!urlRaw) throw new AiValidationError('Missing required field: url');
@@ -228,6 +319,47 @@ function extractVideoUrlFromHtml(html: string, baseUrl: string): { url: string; 
     }
   }
 
+  const tagSrc = extractVideoUrlFromVideoTags(html, baseUrl);
+  if (tagSrc) return { url: tagSrc, extractedFrom: 'html_video_tag' };
+
+  const embedded = extractVideoUrlFromEmbeddedJson(html, baseUrl);
+  if (embedded) return embedded;
+
+  for (const rawUrl of extractUrlsFromText(html)) {
+    const decoded = decodePossibleEscapes(rawUrl);
+    try {
+      const resolved = new URL(decoded, baseUrl).toString();
+      if (!isLikelyMp4Url(resolved)) continue;
+      return { url: resolved, extractedFrom: 'html_mp4_url' };
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
+function extractTikTokVideoId(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const idx = parts.findIndex((p) => p === 'video');
+    if (idx >= 0 && parts[idx + 1] && /^\d{8,}$/.test(parts[idx + 1])) return parts[idx + 1];
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function extractInstagramShortcode(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const idx = parts.findIndex((p) => p === 'reel' || p === 'p');
+    if (idx >= 0 && parts[idx + 1]) return parts[idx + 1];
+  } catch {
+    // ignore
+  }
   return null;
 }
 
@@ -270,15 +402,96 @@ async function resolveVideoFromUrl(url: string): Promise<{
     };
   }
 
+  if (contentType === 'application/octet-stream' && isLikelyMp4Url(first.url)) {
+    const bytes = await readBodyToBufferWithLimit(first, MAX_VIDEO_BYTES, 'Video');
+    return {
+      videoUrl: first.url,
+      extractedFrom: ['direct_video_url'],
+      videoBase64: bytes.toString('base64'),
+      videoMimeType: 'video/mp4',
+    };
+  }
+
   if (contentType.includes('text/html') || contentType === '' || contentType === 'application/octet-stream') {
     const htmlBytes = await readBodyToBufferWithLimit(first, MAX_HTML_BYTES, 'Page content');
     const html = htmlBytes.toString('utf8');
-    const extracted = extractVideoUrlFromHtml(html, first.url);
+    const extractedFrom: ExtractedFrom[] = [];
+    let extracted = extractVideoUrlFromHtml(html, first.url);
+
     if (!extracted) {
+      const platform = guessPlatform(first.url || url);
+      const embedAttempts: Array<{ url: string; tag: ExtractedFrom }> = [];
+
+      if (platform === 'tiktok') {
+        const videoId = extractTikTokVideoId(first.url || url);
+        if (videoId) {
+          embedAttempts.push({
+            url: `https://www.tiktok.com/embed/v2/${encodeURIComponent(videoId)}`,
+            tag: 'tiktok_embed_html',
+          });
+        }
+      }
+
+      if (platform === 'instagram') {
+        const shortcode = extractInstagramShortcode(first.url || url);
+        if (shortcode) {
+          embedAttempts.push({
+            url: `https://www.instagram.com/reel/${encodeURIComponent(shortcode)}/embed/captioned/`,
+            tag: 'instagram_embed_html',
+          });
+          embedAttempts.push({
+            url: `https://www.instagram.com/p/${encodeURIComponent(shortcode)}/embed/captioned/`,
+            tag: 'instagram_embed_html',
+          });
+        }
+      }
+
+      for (const attempt of embedAttempts) {
+        try {
+          const embedRes = await fetchWithTimeout(
+            attempt.url,
+            { method: 'GET', redirect: 'follow', headers },
+            12_000,
+          );
+          if (!embedRes.ok) continue;
+
+          const embedType = normalizeContentType(embedRes.headers.get('content-type'));
+          if (!embedType.includes('text/html') && embedType !== '') continue;
+
+          const embedHtmlBytes = await readBodyToBufferWithLimit(embedRes, MAX_HTML_BYTES, 'Embed content');
+          const embedHtml = embedHtmlBytes.toString('utf8');
+          const embedExtracted = extractVideoUrlFromHtml(embedHtml, embedRes.url);
+          if (!embedExtracted) continue;
+
+          const videoRes = await fetchWithTimeout(
+            embedExtracted.url,
+            { method: 'GET', redirect: 'follow', headers },
+            12_000,
+          );
+          if (!videoRes.ok) continue;
+
+          const videoType = normalizeContentType(videoRes.headers.get('content-type'));
+          const isOctetMp4 = videoType === 'application/octet-stream' && isLikelyMp4Url(videoRes.url);
+          if (!videoType.startsWith('video/') && !isOctetMp4) continue;
+
+          const bytes = await readBodyToBufferWithLimit(videoRes, MAX_VIDEO_BYTES, 'Video');
+          return {
+            videoUrl: videoRes.url,
+            extractedFrom: [attempt.tag, embedExtracted.extractedFrom],
+            videoBase64: bytes.toString('base64'),
+            videoMimeType: videoType.startsWith('video/') ? videoType : 'video/mp4',
+          };
+        } catch {
+          // ignore embed failures
+        }
+      }
+
       throw new AiValidationError(
         'Could not find a downloadable video for that link. TikTok/Instagram may block access without an approved API.',
       );
     }
+
+    extractedFrom.push(extracted.extractedFrom);
 
     const videoRes = await fetchWithTimeout(
       extracted.url,
@@ -291,16 +504,17 @@ async function resolveVideoFromUrl(url: string): Promise<{
     }
 
     const videoType = normalizeContentType(videoRes.headers.get('content-type'));
-    if (!videoType.startsWith('video/')) {
+    const isOctetMp4 = videoType === 'application/octet-stream' && isLikelyMp4Url(videoRes.url);
+    if (!videoType.startsWith('video/') && !isOctetMp4) {
       throw new AiValidationError('Resolved a link, but it did not return a video file.');
     }
 
     const bytes = await readBodyToBufferWithLimit(videoRes, MAX_VIDEO_BYTES, 'Video');
     return {
       videoUrl: videoRes.url,
-      extractedFrom: [extracted.extractedFrom],
+      extractedFrom,
       videoBase64: bytes.toString('base64'),
-      videoMimeType: videoType || 'video/mp4',
+      videoMimeType: videoType.startsWith('video/') ? videoType : 'video/mp4',
     };
   }
 
