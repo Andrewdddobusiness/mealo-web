@@ -685,96 +685,109 @@ export async function importMealFromVideo(
   if (!apiKey) throw new AiConfigError('GEMINI_API_KEY is not configured.');
 
   const debug = makeImportVideoLogger(opts?.requestId);
+  const trace: Array<{ event: string; meta?: Record<string, unknown> }> = [];
+  const record = (event: string, meta?: Record<string, unknown>) => {
+    trace.push({ event, meta });
+    if (trace.length > 40) trace.shift();
+    debug?.(event, meta);
+  };
 
   const validated = validateImportVideoMealInput(input);
   const maxIngredients = clampMaxIngredients(validated.maxIngredients);
   const maxRecipes = clampMaxRecipes(validated.maxRecipes);
-  debug?.('request.validated', {
+  record('request.validated', {
     url: sanitizeUrlForLog(validated.url),
     maxIngredients,
     maxRecipes,
   });
 
-  const resolvedVideo = await resolveVideoFromUrl(validated.url, debug);
+  try {
+    const resolvedVideo = await resolveVideoFromUrl(validated.url, record);
 
-  const ctx: ResolvedImportContext = {
-    url: validated.url,
-    platform: guessPlatform(validated.url),
-    videoUrl: resolvedVideo.videoUrl,
-    extractedFrom: resolvedVideo.extractedFrom,
-    videoBase64: resolvedVideo.videoBase64,
-    videoMimeType: resolvedVideo.videoMimeType,
-  };
+    const ctx: ResolvedImportContext = {
+      url: validated.url,
+      platform: guessPlatform(validated.url),
+      videoUrl: resolvedVideo.videoUrl,
+      extractedFrom: resolvedVideo.extractedFrom,
+      videoBase64: resolvedVideo.videoBase64,
+      videoMimeType: resolvedVideo.videoMimeType,
+    };
 
-  const model = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    model,
-  )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const model = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      model,
+    )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  const systemInstruction = [
-    'You extract recipes from short social cooking videos for a meal planning app.',
-    'Return ONLY valid JSON (no markdown, no code fences, no explanations).',
-    'The JSON MUST match exactly this shape:',
-    '{ "recipes": [ { "name": string, "cuisines": string[]|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string, "category": string|null } ] } ] }',
-    'Rules:',
-    `- recipes must be 0..${maxRecipes} items`,
-    `- ingredients must be 1..${maxIngredients} items`,
-    '- each ingredient.name must be non-empty',
-    '- prefer including quantity + unit for every ingredient, but quantity may be null',
-    '- unit must never be null; choose a reasonable unit (g, piece, tbsp, tsp, cup, ml, etc.)',
-    '- category should be one of: Produce, Pantry, Meat, Dairy, Bakery, Other (or null)',
-  ].join('\n');
+    const systemInstruction = [
+      'You extract recipes from short social cooking videos for a meal planning app.',
+      'Return ONLY valid JSON (no markdown, no code fences, no explanations).',
+      'The JSON MUST match exactly this shape:',
+      '{ "recipes": [ { "name": string, "cuisines": string[]|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string, "category": string|null } ] } ] }',
+      'Rules:',
+      `- recipes must be 0..${maxRecipes} items`,
+      `- ingredients must be 1..${maxIngredients} items`,
+      '- each ingredient.name must be non-empty',
+      '- prefer including quantity + unit for every ingredient, but quantity may be null',
+      '- unit must never be null; choose a reasonable unit (g, piece, tbsp, tsp, cup, ml, etc.)',
+      '- category should be one of: Produce, Pantry, Meat, Dairy, Bakery, Other (or null)',
+    ].join('\n');
 
-  const userPrompt = buildImportPrompt(ctx, maxIngredients, maxRecipes);
+    const userPrompt = buildImportPrompt(ctx, maxIngredients, maxRecipes);
 
-  debug?.('gemini.request', {
-    model,
-    platform: ctx.platform,
-    videoUrl: sanitizeUrlForLog(ctx.videoUrl),
-    extractedFrom: ctx.extractedFrom,
-    maxIngredients,
-    maxRecipes,
-  });
+    record('gemini.request', {
+      model,
+      platform: ctx.platform,
+      videoUrl: sanitizeUrlForLog(ctx.videoUrl),
+      extractedFrom: ctx.extractedFrom,
+      maxIngredients,
+      maxRecipes,
+    });
 
-  const res = await fetchWithTimeout(
-    endpoint,
-    {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [{ inlineData: { mimeType: ctx.videoMimeType, data: ctx.videoBase64 } }, { text: userPrompt }],
+    const res = await fetchWithTimeout(
+      endpoint,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [{ inlineData: { mimeType: ctx.videoMimeType, data: ctx.videoBase64 } }, { text: userPrompt }],
+            },
+          ],
+          systemInstruction: { parts: [{ text: systemInstruction }] },
+          generationConfig: {
+            temperature: 0.25,
+            maxOutputTokens: 1800,
+            responseMimeType: 'application/json',
           },
-        ],
-        systemInstruction: { parts: [{ text: systemInstruction }] },
-        generationConfig: {
-          temperature: 0.25,
-          maxOutputTokens: 1800,
-          responseMimeType: 'application/json',
-        },
-      }),
-    },
-    45_000,
-  );
+        }),
+      },
+      45_000,
+    );
 
-  const json = (await res.json().catch(() => null)) as GeminiGenerateResponse | null;
+    const json = (await res.json().catch(() => null)) as GeminiGenerateResponse | null;
 
-  if (!res.ok) {
-    const message = json?.error?.message || `Gemini request failed (${res.status}).`;
-    throw new AiProviderError(message);
+    if (!res.ok) {
+      const message = json?.error?.message || `Gemini request failed (${res.status}).`;
+      throw new AiProviderError(message);
+    }
+
+    const text = extractTextFromGemini(json ?? {});
+    const parsed = extractJsonObject(text);
+    record('gemini.response.parsed', { textLength: text.length });
+
+    const recipes = validateImportedRecipes(parsed, maxIngredients, maxRecipes);
+    record('recipes.validated', { count: recipes.length, names: recipes.map((r) => r.name).slice(0, 5) });
+
+    return {
+      recipes,
+      meta: { platform: ctx.platform, extractedFrom: ctx.extractedFrom, videoUrl: ctx.videoUrl },
+    };
+  } catch (error) {
+    if (error && typeof error === 'object') {
+      (error as any).aiImportVideoTrace = trace;
+    }
+    throw error;
   }
-
-  const text = extractTextFromGemini(json ?? {});
-  const parsed = extractJsonObject(text);
-  debug?.('gemini.response.parsed', { textLength: text.length });
-
-  const recipes = validateImportedRecipes(parsed, maxIngredients, maxRecipes);
-  debug?.('recipes.validated', { count: recipes.length, names: recipes.map((r) => r.name).slice(0, 5) });
-
-  return {
-    recipes,
-    meta: { platform: ctx.platform, extractedFrom: ctx.extractedFrom, videoUrl: ctx.videoUrl },
-  };
 }

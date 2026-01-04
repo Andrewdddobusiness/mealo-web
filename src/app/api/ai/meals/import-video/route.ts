@@ -43,12 +43,15 @@ function jsonError(
 
 export async function POST(req: Request) {
   const requestId = randomUUID();
+  let userIdForLog: string | null = null;
+  let urlForLog: ReturnType<typeof sanitizeUrlForLog> | null = null;
 
   try {
     const userId = await getUserIdFromRequest(req);
     if (!userId) {
       return jsonError(401, 'unauthorized', 'You must be signed in to import a meal.', requestId);
     }
+    userIdForLog = userId;
 
     if (!db) {
       return jsonError(500, 'server_misconfigured', 'Database is not configured.', requestId);
@@ -90,11 +93,13 @@ export async function POST(req: Request) {
       throw error;
     }
 
+    urlForLog = sanitizeUrlForLog(sanitizedInput.url);
+
     if (DEBUG_IMPORT_VIDEO) {
       console.log('[AI_IMPORT_VIDEO]', {
         requestId,
         userId,
-        url: sanitizeUrlForLog(sanitizedInput.url),
+        url: urlForLog,
       });
     }
 
@@ -117,6 +122,14 @@ export async function POST(req: Request) {
 
     if (error instanceof AiValidationError) {
       // Validation errors here are typically URL issues or inaccessible videos.
+      const trace = (error as any)?.aiImportVideoTrace;
+      console.warn('[AI_IMPORT_VIDEO_FAIL]', {
+        requestId,
+        userId: userIdForLog,
+        url: urlForLog,
+        message: error.message,
+        trace: Array.isArray(trace) ? trace.slice(-40) : undefined,
+      });
       return jsonError(400, 'invalid_request', error.message, requestId);
     }
 
