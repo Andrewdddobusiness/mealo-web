@@ -96,11 +96,10 @@ export async function POST(req: Request) {
     urlForLog = sanitizeUrlForLog(sanitizedInput.url);
 
     if (DEBUG_IMPORT_VIDEO) {
-      console.log('[AI_IMPORT_VIDEO]', {
-        requestId,
-        userId,
-        url: urlForLog,
-      });
+      console.log(
+        '[AI_IMPORT_VIDEO]',
+        JSON.stringify({ requestId, userId, url: urlForLog }),
+      );
     }
 
     await consumeAiUsage(db, userId, 'ai_import_video_meal');
@@ -123,13 +122,14 @@ export async function POST(req: Request) {
     if (error instanceof AiValidationError) {
       // Validation errors here are typically URL issues or inaccessible videos.
       const trace = (error as any)?.aiImportVideoTrace;
-      console.warn('[AI_IMPORT_VIDEO_FAIL]', {
+      const payload = {
         requestId,
         userId: userIdForLog,
         url: urlForLog,
         message: error.message,
         trace: Array.isArray(trace) ? trace.slice(-40) : undefined,
-      });
+      };
+      console.warn('[AI_IMPORT_VIDEO_FAIL]', JSON.stringify(payload));
       return jsonError(400, 'invalid_request', error.message, requestId);
     }
 

@@ -515,7 +515,15 @@ async function resolveVideoFromUrlWithDebug(
             { method: 'GET', redirect: 'follow', headers },
             12_000,
           );
-          if (!embedRes.ok) continue;
+          if (!embedRes.ok) {
+            debug?.('embed.fetch.error', {
+              url: sanitizeUrlForLog(attempt.url),
+              finalUrl: sanitizeUrlForLog(embedRes.url),
+              status: embedRes.status,
+              contentType: normalizeContentType(embedRes.headers.get('content-type')),
+            });
+            continue;
+          }
 
           const embedType = normalizeContentType(embedRes.headers.get('content-type'));
           debug?.('embed.fetch.ok', {
@@ -524,12 +532,30 @@ async function resolveVideoFromUrlWithDebug(
             status: embedRes.status,
             contentType: embedType,
           });
-          if (!embedType.includes('text/html') && embedType !== '') continue;
+          if (!embedType.includes('text/html') && embedType !== '') {
+            debug?.('embed.fetch.skip', { reason: 'non_html', contentType: embedType, finalUrl: sanitizeUrlForLog(embedRes.url) });
+            continue;
+          }
 
           const embedHtmlBytes = await readBodyToBufferWithLimit(embedRes, MAX_HTML_BYTES, 'Embed content');
           const embedHtml = embedHtmlBytes.toString('utf8');
           const embedExtracted = extractVideoUrlFromHtml(embedHtml, embedRes.url);
-          if (!embedExtracted) continue;
+          if (!embedExtracted) {
+            debug?.('embed.extracted.none', {
+              tag: attempt.tag,
+              finalUrl: sanitizeUrlForLog(embedRes.url),
+              bytes: embedHtmlBytes.length,
+              probes: {
+                hasOgVideo: embedHtml.includes('og:video'),
+                hasVideoTag: /<video\b/i.test(embedHtml) || /<source\b/i.test(embedHtml),
+                hasMp4: /\.mp4(?:$|[?#])/i.test(embedHtml),
+                hasEmbedJs: embedHtml.includes('instagram.com/embed.js'),
+                hasCaptcha: /captcha/i.test(embedHtml),
+                hasLogin: /log in|login/i.test(embedHtml),
+              },
+            });
+            continue;
+          }
 
           debug?.('embed.extracted', {
             tag: attempt.tag,
@@ -561,8 +587,11 @@ async function resolveVideoFromUrlWithDebug(
             videoBase64: bytes.toString('base64'),
             videoMimeType: videoType.startsWith('video/') ? videoType : 'video/mp4',
           };
-        } catch {
-          // ignore embed failures
+        } catch (error) {
+          debug?.('embed.error', {
+            url: sanitizeUrlForLog(attempt.url),
+            message: error instanceof Error ? error.message : String(error),
+          });
         }
       }
 
