@@ -50,6 +50,7 @@ const DEFAULT_MAX_RECIPES = 3;
 const MAX_URL_LENGTH = 2048;
 const MAX_VIDEO_BYTES = Number.parseInt(process.env.AI_IMPORT_VIDEO_MAX_BYTES || '', 10) || 18 * 1024 * 1024; // 18MB
 const MAX_HTML_BYTES = 800_000;
+const DEBUG_IMPORT_VIDEO = process.env.AI_IMPORT_VIDEO_DEBUG === '1' || process.env.NODE_ENV !== 'production';
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
@@ -293,6 +294,16 @@ function normalizeContentType(value: string | null): string {
   return raw.split(';')[0]?.trim() || '';
 }
 
+function sanitizeUrlForLog(input: string): { url: string; queryKeys: string[] } {
+  try {
+    const parsed = new URL(input);
+    const queryKeys = Array.from(new Set(Array.from(parsed.searchParams.keys()))).slice(0, 20);
+    return { url: `${parsed.origin}${parsed.pathname}`, queryKeys };
+  } catch {
+    return { url: input.slice(0, 200), queryKeys: [] };
+  }
+}
+
 function extractVideoUrlFromHtml(html: string, baseUrl: string): { url: string; extractedFrom: ExtractedFrom } | null {
   const ogVideo =
     findMetaContent(html, 'property', 'og:video') ||
@@ -363,7 +374,33 @@ function extractInstagramShortcode(url: string): string | null {
   return null;
 }
 
-async function resolveVideoFromUrl(url: string): Promise<{
+async function resolveVideoFromUrl(
+  url: string,
+  debug?: (event: string, meta?: Record<string, unknown>) => void,
+): Promise<{
+  videoUrl: string;
+  extractedFrom: ExtractedFrom[];
+  videoBase64: string;
+  videoMimeType: string;
+}> {
+  return resolveVideoFromUrlWithDebug(url, debug);
+}
+
+function makeImportVideoLogger(
+  requestId?: string,
+): ((event: string, meta?: Record<string, unknown>) => void) | undefined {
+  if (!DEBUG_IMPORT_VIDEO) return undefined;
+  return (event, meta) => {
+    const prefix = requestId ? `[AI_IMPORT_VIDEO ${requestId}]` : '[AI_IMPORT_VIDEO]';
+    if (meta && Object.keys(meta).length > 0) console.log(prefix, event, meta);
+    else console.log(prefix, event);
+  };
+}
+
+async function resolveVideoFromUrlWithDebug(
+  url: string,
+  debug?: (event: string, meta?: Record<string, unknown>) => void,
+): Promise<{
   videoUrl: string;
   extractedFrom: ExtractedFrom[];
   videoBase64: string;
@@ -388,12 +425,21 @@ async function resolveVideoFromUrl(url: string): Promise<{
   );
 
   if (!first.ok) {
+    debug?.('fetch.first.error', { url: sanitizeUrlForLog(url), status: first.status });
     throw new AiValidationError(`Could not access that link (HTTP ${first.status}).`);
   }
 
   const contentType = normalizeContentType(first.headers.get('content-type'));
+  debug?.('fetch.first.ok', {
+    url: sanitizeUrlForLog(url),
+    finalUrl: sanitizeUrlForLog(first.url),
+    status: first.status,
+    contentType,
+    contentLength: first.headers.get('content-length'),
+  });
   if (contentType.startsWith('video/')) {
     const bytes = await readBodyToBufferWithLimit(first, MAX_VIDEO_BYTES, 'Video');
+    debug?.('video.direct', { bytes: bytes.length, contentType, finalUrl: sanitizeUrlForLog(first.url) });
     return {
       videoUrl: first.url,
       extractedFrom: ['direct_video_url'],
@@ -404,6 +450,7 @@ async function resolveVideoFromUrl(url: string): Promise<{
 
   if (contentType === 'application/octet-stream' && isLikelyMp4Url(first.url)) {
     const bytes = await readBodyToBufferWithLimit(first, MAX_VIDEO_BYTES, 'Video');
+    debug?.('video.direct.octet', { bytes: bytes.length, finalUrl: sanitizeUrlForLog(first.url) });
     return {
       videoUrl: first.url,
       extractedFrom: ['direct_video_url'],
@@ -418,8 +465,22 @@ async function resolveVideoFromUrl(url: string): Promise<{
     const extractedFrom: ExtractedFrom[] = [];
     let extracted = extractVideoUrlFromHtml(html, first.url);
 
+    debug?.('html.fetched', {
+      finalUrl: sanitizeUrlForLog(first.url),
+      bytes: htmlBytes.length,
+      contentType,
+      probes: {
+        hasOgVideo: html.includes('og:video'),
+        hasSigiState: html.includes('SIGI_STATE') || html.includes('sigiState'),
+        hasNextData: html.includes('__NEXT_DATA__'),
+        hasCaptcha: /captcha/i.test(html),
+        hasLogin: /log in|login/i.test(html),
+      },
+    });
+
     if (!extracted) {
       const platform = guessPlatform(first.url || url);
+      debug?.('html.no_direct_video', { platform, finalUrl: sanitizeUrlForLog(first.url || url) });
       const embedAttempts: Array<{ url: string; tag: ExtractedFrom }> = [];
 
       if (platform === 'tiktok') {
@@ -448,6 +509,7 @@ async function resolveVideoFromUrl(url: string): Promise<{
 
       for (const attempt of embedAttempts) {
         try {
+          debug?.('embed.fetch.start', { url: sanitizeUrlForLog(attempt.url), tag: attempt.tag });
           const embedRes = await fetchWithTimeout(
             attempt.url,
             { method: 'GET', redirect: 'follow', headers },
@@ -456,12 +518,24 @@ async function resolveVideoFromUrl(url: string): Promise<{
           if (!embedRes.ok) continue;
 
           const embedType = normalizeContentType(embedRes.headers.get('content-type'));
+          debug?.('embed.fetch.ok', {
+            url: sanitizeUrlForLog(attempt.url),
+            finalUrl: sanitizeUrlForLog(embedRes.url),
+            status: embedRes.status,
+            contentType: embedType,
+          });
           if (!embedType.includes('text/html') && embedType !== '') continue;
 
           const embedHtmlBytes = await readBodyToBufferWithLimit(embedRes, MAX_HTML_BYTES, 'Embed content');
           const embedHtml = embedHtmlBytes.toString('utf8');
           const embedExtracted = extractVideoUrlFromHtml(embedHtml, embedRes.url);
           if (!embedExtracted) continue;
+
+          debug?.('embed.extracted', {
+            tag: attempt.tag,
+            extractedFrom: embedExtracted.extractedFrom,
+            videoUrl: sanitizeUrlForLog(embedExtracted.url),
+          });
 
           const videoRes = await fetchWithTimeout(
             embedExtracted.url,
@@ -472,9 +546,15 @@ async function resolveVideoFromUrl(url: string): Promise<{
 
           const videoType = normalizeContentType(videoRes.headers.get('content-type'));
           const isOctetMp4 = videoType === 'application/octet-stream' && isLikelyMp4Url(videoRes.url);
+          debug?.('embed.video.fetch.ok', {
+            status: videoRes.status,
+            contentType: videoType,
+            finalUrl: sanitizeUrlForLog(videoRes.url),
+          });
           if (!videoType.startsWith('video/') && !isOctetMp4) continue;
 
           const bytes = await readBodyToBufferWithLimit(videoRes, MAX_VIDEO_BYTES, 'Video');
+          debug?.('embed.video.bytes', { bytes: bytes.length, contentType: videoType, finalUrl: sanitizeUrlForLog(videoRes.url) });
           return {
             videoUrl: videoRes.url,
             extractedFrom: [attempt.tag, embedExtracted.extractedFrom],
@@ -492,6 +572,10 @@ async function resolveVideoFromUrl(url: string): Promise<{
     }
 
     extractedFrom.push(extracted.extractedFrom);
+    debug?.('html.extracted', {
+      extractedFrom: extracted.extractedFrom,
+      videoUrl: sanitizeUrlForLog(extracted.url),
+    });
 
     const videoRes = await fetchWithTimeout(
       extracted.url,
@@ -500,16 +584,24 @@ async function resolveVideoFromUrl(url: string): Promise<{
     );
 
     if (!videoRes.ok) {
+      debug?.('video.fetch.error', { status: videoRes.status, videoUrl: sanitizeUrlForLog(extracted.url) });
       throw new AiValidationError(`Could not access video content (HTTP ${videoRes.status}).`);
     }
 
     const videoType = normalizeContentType(videoRes.headers.get('content-type'));
     const isOctetMp4 = videoType === 'application/octet-stream' && isLikelyMp4Url(videoRes.url);
+    debug?.('video.fetch.ok', {
+      status: videoRes.status,
+      contentType: videoType,
+      finalUrl: sanitizeUrlForLog(videoRes.url),
+      contentLength: videoRes.headers.get('content-length'),
+    });
     if (!videoType.startsWith('video/') && !isOctetMp4) {
       throw new AiValidationError('Resolved a link, but it did not return a video file.');
     }
 
     const bytes = await readBodyToBufferWithLimit(videoRes, MAX_VIDEO_BYTES, 'Video');
+    debug?.('video.bytes', { bytes: bytes.length, contentType: videoType, finalUrl: sanitizeUrlForLog(videoRes.url) });
     return {
       videoUrl: videoRes.url,
       extractedFrom,
@@ -573,7 +665,10 @@ function buildImportPrompt(ctx: Pick<ResolvedImportContext, 'url' | 'platform'>,
   ].join('\n');
 }
 
-export async function importMealFromVideo(input: ImportVideoMealInput): Promise<{
+export async function importMealFromVideo(
+  input: ImportVideoMealInput,
+  opts?: { requestId?: string },
+): Promise<{
   recipes: GeneratedMeal[];
   meta: {
     platform: ResolvedImportContext['platform'];
@@ -589,10 +684,18 @@ export async function importMealFromVideo(input: ImportVideoMealInput): Promise<
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new AiConfigError('GEMINI_API_KEY is not configured.');
 
+  const debug = makeImportVideoLogger(opts?.requestId);
+
   const validated = validateImportVideoMealInput(input);
   const maxIngredients = clampMaxIngredients(validated.maxIngredients);
   const maxRecipes = clampMaxRecipes(validated.maxRecipes);
-  const resolvedVideo = await resolveVideoFromUrl(validated.url);
+  debug?.('request.validated', {
+    url: sanitizeUrlForLog(validated.url),
+    maxIngredients,
+    maxRecipes,
+  });
+
+  const resolvedVideo = await resolveVideoFromUrl(validated.url, debug);
 
   const ctx: ResolvedImportContext = {
     url: validated.url,
@@ -623,6 +726,15 @@ export async function importMealFromVideo(input: ImportVideoMealInput): Promise<
   ].join('\n');
 
   const userPrompt = buildImportPrompt(ctx, maxIngredients, maxRecipes);
+
+  debug?.('gemini.request', {
+    model,
+    platform: ctx.platform,
+    videoUrl: sanitizeUrlForLog(ctx.videoUrl),
+    extractedFrom: ctx.extractedFrom,
+    maxIngredients,
+    maxRecipes,
+  });
 
   const res = await fetchWithTimeout(
     endpoint,
@@ -656,9 +768,13 @@ export async function importMealFromVideo(input: ImportVideoMealInput): Promise<
 
   const text = extractTextFromGemini(json ?? {});
   const parsed = extractJsonObject(text);
+  debug?.('gemini.response.parsed', { textLength: text.length });
+
+  const recipes = validateImportedRecipes(parsed, maxIngredients, maxRecipes);
+  debug?.('recipes.validated', { count: recipes.length, names: recipes.map((r) => r.name).slice(0, 5) });
 
   return {
-    recipes: validateImportedRecipes(parsed, maxIngredients, maxRecipes),
+    recipes,
     meta: { platform: ctx.platform, extractedFrom: ctx.extractedFrom, videoUrl: ctx.videoUrl },
   };
 }

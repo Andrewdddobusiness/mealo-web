@@ -16,6 +16,17 @@ import { AiUsageLimitError, consumeAiUsage } from '@/lib/ai/aiUsage';
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 6;
 const rateLimitByUser = new Map<string, { resetAtMs: number; count: number }>();
+const DEBUG_IMPORT_VIDEO = process.env.AI_IMPORT_VIDEO_DEBUG === '1' || process.env.NODE_ENV !== 'production';
+
+function sanitizeUrlForLog(input: string): { url: string; queryKeys: string[] } {
+  try {
+    const parsed = new URL(input);
+    const queryKeys = Array.from(new Set(Array.from(parsed.searchParams.keys()))).slice(0, 20);
+    return { url: `${parsed.origin}${parsed.pathname}`, queryKeys };
+  } catch {
+    return { url: input.slice(0, 200), queryKeys: [] };
+  }
+}
 
 function jsonError(
   status: number,
@@ -79,9 +90,17 @@ export async function POST(req: Request) {
       throw error;
     }
 
+    if (DEBUG_IMPORT_VIDEO) {
+      console.log('[AI_IMPORT_VIDEO]', {
+        requestId,
+        userId,
+        url: sanitizeUrlForLog(sanitizedInput.url),
+      });
+    }
+
     await consumeAiUsage(db, userId, 'ai_import_video_meal');
 
-    const result = await importMealFromVideo(sanitizedInput);
+    const result = await importMealFromVideo(sanitizedInput, { requestId });
 
     const res = NextResponse.json({ recipes: result.recipes, meta: result.meta }, { status: 200 });
     res.headers.set('x-request-id', requestId);
