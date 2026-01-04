@@ -49,6 +49,9 @@ export function getMonthlyAiLimit(feature: AiFeature): number {
   if (feature === 'ai_scan_meal') {
     return parseNonNegativeInt(process.env.AI_SCAN_MEAL_MONTHLY_LIMIT, 30);
   }
+  if (feature === 'ai_import_video_meal') {
+    return parseNonNegativeInt(process.env.AI_IMPORT_VIDEO_MEAL_MONTHLY_LIMIT, 20);
+  }
   return parseNonNegativeInt(process.env.AI_GENERATE_MEAL_MONTHLY_LIMIT, 60);
 }
 
@@ -122,9 +125,11 @@ export async function getAiUsageForPeriod(
 
   const scanLimit = getMonthlyAiLimit('ai_scan_meal');
   const generateLimit = getMonthlyAiLimit('ai_generate_meal');
+  const importVideoLimit = getMonthlyAiLimit('ai_import_video_meal');
 
   const scanUsed = usageByFeature.get('ai_scan_meal') ?? 0;
   const generateUsed = usageByFeature.get('ai_generate_meal') ?? 0;
+  const importVideoUsed = usageByFeature.get('ai_import_video_meal') ?? 0;
 
   return {
     ai_scan_meal: {
@@ -137,6 +142,10 @@ export async function getAiUsageForPeriod(
       limit: generateLimit,
       remaining: Math.max(0, generateLimit - generateUsed),
     },
+    ai_import_video_meal: {
+      used: importVideoUsed,
+      limit: importVideoLimit,
+      remaining: Math.max(0, importVideoLimit - importVideoUsed),
+    },
   };
 }
-
