@@ -23,6 +23,8 @@ export type ImportVideoMealInput = {
   maxRecipes?: number;
 };
 
+export type ImportVideoMealMode = 'caption' | 'caption+thumbnail' | 'video';
+
 type ExtractedFrom =
   | 'direct_video_url'
   | 'og_video_meta'
@@ -32,16 +34,30 @@ type ExtractedFrom =
   | 'tiktok_sigi_state'
   | 'instagram_json'
   | 'tiktok_embed_html'
-  | 'instagram_embed_html';
+  | 'instagram_embed_html'
+  | 'instagram_oembed_title'
+  | 'tiktok_oembed_title'
+  | 'instagram_oembed_thumbnail'
+  | 'tiktok_oembed_thumbnail';
 
-type ResolvedImportContext = {
-  url: string;
-  platform: 'tiktok' | 'instagram' | 'other';
-  videoUrl: string;
-  extractedFrom: ExtractedFrom[];
-  videoBase64: string;
-  videoMimeType: string;
-};
+type ImportSource =
+  | {
+      mode: 'caption' | 'caption+thumbnail';
+      platform: 'tiktok' | 'instagram' | 'other';
+      sourceUrl: string;
+      extractedFrom: ExtractedFrom[];
+      caption: string;
+      thumbnailUrl?: string;
+    }
+  | {
+      mode: 'video';
+      platform: 'tiktok' | 'instagram' | 'other';
+      sourceUrl: string;
+      extractedFrom: ExtractedFrom[];
+      videoUrl: string;
+      videoBase64: string;
+      videoMimeType: string;
+    };
 
 const DEFAULT_GEMINI_MODEL = 'gemini-1.5-flash';
 const DEFAULT_MAX_INGREDIENTS = 12;
@@ -50,6 +66,8 @@ const DEFAULT_MAX_RECIPES = 3;
 const MAX_URL_LENGTH = 2048;
 const MAX_VIDEO_BYTES = Number.parseInt(process.env.AI_IMPORT_VIDEO_MAX_BYTES || '', 10) || 18 * 1024 * 1024; // 18MB
 const MAX_HTML_BYTES = 800_000;
+const MAX_OEMBED_BYTES = 350_000;
+const MAX_CAPTION_CHARS = 18_000;
 const DEBUG_IMPORT_VIDEO = process.env.AI_IMPORT_VIDEO_DEBUG === '1' || process.env.NODE_ENV !== 'production';
 
 function normalizeWhitespace(value: string): string {
@@ -79,7 +97,7 @@ function clampMaxRecipes(value: unknown): number {
   return rounded;
 }
 
-function guessPlatform(url: string): ResolvedImportContext['platform'] {
+function guessPlatform(url: string): ImportSource['platform'] {
   try {
     const parsed = new URL(url);
     const host = parsed.hostname.toLowerCase();
@@ -302,6 +320,116 @@ function sanitizeUrlForLog(input: string): { url: string; queryKeys: string[] } 
   } catch {
     return { url: input.slice(0, 200), queryKeys: [] };
   }
+}
+
+function normalizeCaptionText(value: string): string {
+  const normalizedNewlines = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalizedNewlines
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd());
+
+  while (lines.length > 0 && !lines[0]?.trim()) lines.shift();
+  while (lines.length > 0 && !lines[lines.length - 1]?.trim()) lines.pop();
+
+  const outLines: string[] = [];
+  let emptyRun = 0;
+  for (const line of lines) {
+    if (!line.trim()) {
+      emptyRun += 1;
+      if (emptyRun <= 1) outLines.push('');
+      continue;
+    }
+    emptyRun = 0;
+    outLines.push(line);
+  }
+
+  const joined = outLines.join('\n').trim();
+  return joined.slice(0, MAX_CAPTION_CHARS);
+}
+
+async function fetchCaptionFromOEmbed(
+  sourceUrl: string,
+  platform: ImportSource['platform'],
+  debug?: (event: string, meta?: Record<string, unknown>) => void,
+): Promise<{ caption: string; thumbnailUrl?: string; extractedFrom: ExtractedFrom[] } | null> {
+  let endpoint: string | null = null;
+  let titleTag: ExtractedFrom | null = null;
+
+  if (platform === 'instagram') {
+    endpoint = `https://i.instagram.com/api/v1/oembed/?url=${encodeURIComponent(sourceUrl)}`;
+    titleTag = 'instagram_oembed_title';
+  } else if (platform === 'tiktok') {
+    endpoint = `https://www.tiktok.com/oembed?url=${encodeURIComponent(sourceUrl)}`;
+    titleTag = 'tiktok_oembed_title';
+  }
+
+  if (!endpoint || !titleTag) return null;
+
+  const headers = {
+    'user-agent':
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    accept: 'application/json,text/html;q=0.9,*/*;q=0.8',
+    'accept-language': 'en-US,en;q=0.9',
+  } satisfies Record<string, string>;
+
+  debug?.('oembed.fetch.start', { platform, url: sanitizeUrlForLog(sourceUrl) });
+
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(endpoint, { method: 'GET', redirect: 'follow', headers }, 12_000);
+  } catch (error) {
+    debug?.('oembed.fetch.error', {
+      platform,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+
+  const contentType = normalizeContentType(res.headers.get('content-type'));
+  debug?.('oembed.fetch.ok', {
+    platform,
+    status: res.status,
+    contentType,
+    finalUrl: sanitizeUrlForLog(res.url),
+  });
+
+  if (!res.ok) return null;
+
+  let bytes: Buffer;
+  try {
+    bytes = await readBodyToBufferWithLimit(res, MAX_OEMBED_BYTES, 'oEmbed response');
+  } catch (error) {
+    debug?.('oembed.read.error', {
+      platform,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+  let parsed: any;
+  try {
+    parsed = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    debug?.('oembed.parse.error', { platform, bytes: bytes.length, contentType });
+    return null;
+  }
+
+  const captionRaw = typeof parsed?.title === 'string' ? parsed.title : '';
+  const caption = normalizeCaptionText(captionRaw);
+  const thumbnailUrl = typeof parsed?.thumbnail_url === 'string' ? parsed.thumbnail_url.trim() : '';
+
+  debug?.('oembed.parsed', {
+    platform,
+    captionLength: caption.length,
+    hasThumbnail: Boolean(thumbnailUrl),
+  });
+
+  if (!caption) return null;
+
+  return {
+    caption,
+    thumbnailUrl: thumbnailUrl || undefined,
+    extractedFrom: [titleTag],
+  };
 }
 
 function extractVideoUrlFromHtml(html: string, baseUrl: string): { url: string; extractedFrom: ExtractedFrom } | null {
@@ -672,23 +800,47 @@ function validateImportedRecipes(raw: unknown, maxIngredients: number, maxRecipe
   }
 
   if (out.length === 0) {
-    throw new AiValidationError('No recipes found in that video.');
+    throw new AiValidationError(
+      'No recipes found for that link. Try a post where the recipe is written in the caption/description.',
+    );
   }
 
   return out;
 }
 
-function buildImportPrompt(ctx: Pick<ResolvedImportContext, 'url' | 'platform'>, maxIngredients: number, maxRecipes: number): string {
-  return [
-    `Video URL: ${ctx.url}`,
-    `Platform: ${ctx.platform}`,
+function buildImportPrompt(source: ImportSource, maxIngredients: number, maxRecipes: number): string {
+  const header = [
+    `Source URL: ${source.sourceUrl}`,
+    `Platform: ${source.platform}`,
+    `Mode: ${source.mode}`,
     `Max recipes: ${maxRecipes}`,
     `Max ingredients per recipe: ${maxIngredients}`,
     '',
+  ];
+
+  if (source.mode === 'video') {
+    return [
+      ...header,
+      `Resolved video URL: ${source.videoUrl}`,
+      '',
+      'Task:',
+      '- Analyze the provided cooking video (visuals + audio).',
+      '- Extract 1 or more recipe candidates; if the video clearly contains multiple distinct recipes/variations, return multiple.',
+      '- Use spoken words, on-screen text, and visuals (ingredients shown) to infer ingredient names and rough quantities.',
+      '- If a quantity is unknown, return null quantity.',
+      '- If no recipe is present, return { "recipes": [] }.',
+    ].join('\n');
+  }
+
+  return [
+    ...header,
+    'Caption/description:',
+    source.caption,
+    '',
     'Task:',
-    '- Analyze the provided cooking video (visuals + audio).',
-    '- Extract 1 or more recipe candidates; if the video clearly contains multiple distinct recipes/variations, return multiple.',
-    '- Use spoken words, on-screen text, and visuals (ingredients shown) to infer ingredient names and rough quantities.',
+    '- Extract 1 or more recipe candidates from the caption/description text.',
+    '- If the text clearly contains multiple distinct recipes/variations, return multiple.',
+    '- Prefer explicit ingredients from the text; do not invent ingredients if the text is not recipe-like.',
     '- If a quantity is unknown, return null quantity.',
     '- If no recipe is present, return { "recipes": [] }.',
   ].join('\n');
@@ -700,9 +852,10 @@ export async function importMealFromVideo(
 ): Promise<{
   recipes: GeneratedMeal[];
   meta: {
-    platform: ResolvedImportContext['platform'];
+    platform: ImportSource['platform'];
+    mode: ImportVideoMealMode;
     extractedFrom: ExtractedFrom[];
-    videoUrl: string;
+    videoUrl?: string;
   };
 }> {
   const provider = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
@@ -731,16 +884,45 @@ export async function importMealFromVideo(
   });
 
   try {
-    const resolvedVideo = await resolveVideoFromUrl(validated.url, record);
+    const platform = guessPlatform(validated.url);
+    let source: ImportSource;
 
-    const ctx: ResolvedImportContext = {
-      url: validated.url,
-      platform: guessPlatform(validated.url),
-      videoUrl: resolvedVideo.videoUrl,
-      extractedFrom: resolvedVideo.extractedFrom,
-      videoBase64: resolvedVideo.videoBase64,
-      videoMimeType: resolvedVideo.videoMimeType,
-    };
+    const oembed = await fetchCaptionFromOEmbed(validated.url, platform, record);
+    if (oembed) {
+      record('source.caption.ready', {
+        platform,
+        captionLength: oembed.caption.length,
+        hasThumbnail: Boolean(oembed.thumbnailUrl),
+        extractedFrom: oembed.extractedFrom,
+      });
+
+      source = {
+        mode: 'caption',
+        platform,
+        sourceUrl: validated.url,
+        extractedFrom: oembed.extractedFrom,
+        caption: oembed.caption,
+        thumbnailUrl: oembed.thumbnailUrl,
+      };
+    } else {
+      record('source.caption.missing', { platform });
+      if (platform !== 'other') {
+        throw new AiValidationError(
+          'Could not read the caption/description for that link. Try a public post, or try another link.',
+        );
+      }
+
+      const resolvedVideo = await resolveVideoFromUrl(validated.url, record);
+      source = {
+        mode: 'video',
+        platform,
+        sourceUrl: validated.url,
+        extractedFrom: resolvedVideo.extractedFrom,
+        videoUrl: resolvedVideo.videoUrl,
+        videoBase64: resolvedVideo.videoBase64,
+        videoMimeType: resolvedVideo.videoMimeType,
+      };
+    }
 
     const model = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
@@ -748,7 +930,8 @@ export async function importMealFromVideo(
     )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
     const systemInstruction = [
-      'You extract recipes from short social cooking videos for a meal planning app.',
+      'You extract recipes from social cooking posts for a meal planning app.',
+      'You may be given a caption/description and/or a video.',
       'Return ONLY valid JSON (no markdown, no code fences, no explanations).',
       'The JSON MUST match exactly this shape:',
       '{ "recipes": [ { "name": string, "cuisines": string[]|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string, "category": string|null } ] } ] }',
@@ -761,16 +944,24 @@ export async function importMealFromVideo(
       '- category should be one of: Produce, Pantry, Meat, Dairy, Bakery, Other (or null)',
     ].join('\n');
 
-    const userPrompt = buildImportPrompt(ctx, maxIngredients, maxRecipes);
+    const userPrompt = buildImportPrompt(source, maxIngredients, maxRecipes);
 
     record('gemini.request', {
       model,
-      platform: ctx.platform,
-      videoUrl: sanitizeUrlForLog(ctx.videoUrl),
-      extractedFrom: ctx.extractedFrom,
+      platform: source.platform,
+      mode: source.mode,
+      extractedFrom: source.extractedFrom,
+      ...(source.mode === 'video'
+        ? { videoUrl: sanitizeUrlForLog(source.videoUrl) }
+        : { captionLength: source.caption.length }),
       maxIngredients,
       maxRecipes,
     });
+
+    const parts =
+      source.mode === 'video'
+        ? [{ inlineData: { mimeType: source.videoMimeType, data: source.videoBase64 } }, { text: userPrompt }]
+        : [{ text: userPrompt }];
 
     const res = await fetchWithTimeout(
       endpoint,
@@ -781,7 +972,7 @@ export async function importMealFromVideo(
           contents: [
             {
               role: 'user',
-              parts: [{ inlineData: { mimeType: ctx.videoMimeType, data: ctx.videoBase64 } }, { text: userPrompt }],
+              parts,
             },
           ],
           systemInstruction: { parts: [{ text: systemInstruction }] },
@@ -811,7 +1002,12 @@ export async function importMealFromVideo(
 
     return {
       recipes,
-      meta: { platform: ctx.platform, extractedFrom: ctx.extractedFrom, videoUrl: ctx.videoUrl },
+      meta: {
+        platform: source.platform,
+        mode: source.mode,
+        extractedFrom: source.extractedFrom,
+        videoUrl: source.mode === 'video' ? source.videoUrl : undefined,
+      },
     };
   } catch (error) {
     if (error && typeof error === 'object') {
