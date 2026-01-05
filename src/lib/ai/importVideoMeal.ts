@@ -23,7 +23,7 @@ export type ImportVideoMealInput = {
   maxRecipes?: number;
 };
 
-export type ImportVideoMealMode = 'caption' | 'caption+thumbnail' | 'video';
+export type ImportVideoMealMode = 'caption' | 'caption+thumbnail' | 'video' | 'website';
 
 type ExtractedFrom =
   | 'direct_video_url'
@@ -37,12 +37,13 @@ type ExtractedFrom =
   | 'instagram_embed_html'
   | 'instagram_oembed_title'
   | 'tiktok_oembed_title'
-  | 'instagram_oembed_thumbnail'
-  | 'tiktok_oembed_thumbnail';
+  | 'video_resolver'
+  | 'recipe_website_jsonld'
+  | 'recipe_website_html';
 
 type ImportSource =
   | {
-      mode: 'caption' | 'caption+thumbnail';
+      mode: 'caption' | 'caption+thumbnail' | 'website';
       platform: 'tiktok' | 'instagram' | 'other';
       sourceUrl: string;
       extractedFrom: ExtractedFrom[];
@@ -68,6 +69,8 @@ const MAX_VIDEO_BYTES = Number.parseInt(process.env.AI_IMPORT_VIDEO_MAX_BYTES ||
 const MAX_HTML_BYTES = 800_000;
 const MAX_OEMBED_BYTES = 350_000;
 const MAX_CAPTION_CHARS = 18_000;
+const MAX_RESOLVER_BYTES = 250_000;
+const MAX_RECIPE_WEBSITE_BYTES = 1_400_000;
 const DEBUG_IMPORT_VIDEO = process.env.AI_IMPORT_VIDEO_DEBUG === '1' || process.env.NODE_ENV !== 'production';
 
 function normalizeWhitespace(value: string): string {
@@ -201,6 +204,67 @@ function extractUrlsFromText(text: string): string[] {
     if (out.length >= 25) break;
   }
   return out;
+}
+
+function extractWwwUrlsFromText(text: string): string[] {
+  const out: string[] = [];
+  const urlRegex = /(^|[\s"'(])((?:www\.)[^\s"'<>\\]+)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = urlRegex.exec(text))) {
+    const raw = match[2];
+    if (!raw) continue;
+    out.push(`https://${raw}`);
+    if (out.length >= 25) break;
+  }
+  return out;
+}
+
+function trimTrailingPunctuation(value: string): string {
+  let out = value.trim();
+  while (out.length > 0 && /[),.;!?]+$/.test(out)) out = out.slice(0, -1);
+  return out;
+}
+
+function unwrapInstagramRedirector(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.toLowerCase() !== 'l.instagram.com') return url;
+    const u = parsed.searchParams.get('u');
+    if (!u) return url;
+    return decodeURIComponent(u);
+  } catch {
+    return url;
+  }
+}
+
+function extractCandidateWebsiteUrls(caption: string): string[] {
+  const candidates = [...extractUrlsFromText(caption), ...extractWwwUrlsFromText(caption)]
+    .map((u) => trimTrailingPunctuation(decodePossibleEscapes(u)))
+    .map((u) => unwrapInstagramRedirector(u));
+
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of candidates) {
+    if (!raw) continue;
+    let normalized: string;
+    try {
+      normalized = ensureSafeHttpUrl(raw, 'recipe website URL');
+    } catch {
+      continue;
+    }
+    try {
+      const host = new URL(normalized).hostname.toLowerCase();
+      if (host.includes('instagram.com')) continue;
+      if (host.includes('tiktok.com')) continue;
+    } catch {
+      continue;
+    }
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    unique.push(normalized);
+    if (unique.length >= 5) break;
+  }
+  return unique;
 }
 
 function extractVideoUrlFromVideoTags(html: string, baseUrl: string): string | null {
@@ -347,6 +411,204 @@ function normalizeCaptionText(value: string): string {
   return joined.slice(0, MAX_CAPTION_CHARS);
 }
 
+function extractJsonLdScripts(html: string): string[] {
+  const out: string[] = [];
+  const regex = /<script\b[^>]*type=(["'])application\/ld\+json\1[^>]*>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(html))) {
+    const body = match[2];
+    if (!body) continue;
+    out.push(body.trim());
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
+function nodeHasRecipeType(node: any): boolean {
+  const type = node?.['@type'];
+  if (typeof type === 'string') return type.toLowerCase() === 'recipe';
+  if (Array.isArray(type)) return type.some((t) => typeof t === 'string' && t.toLowerCase() === 'recipe');
+  return false;
+}
+
+function collectRecipeNodes(value: any, out: any[], depth = 0) {
+  if (depth > 4) return;
+  if (!value) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectRecipeNodes(item, out, depth + 1);
+    return;
+  }
+  if (typeof value !== 'object') return;
+
+  if (nodeHasRecipeType(value)) out.push(value);
+
+  const graph = (value as any)['@graph'];
+  if (Array.isArray(graph)) {
+    for (const node of graph) collectRecipeNodes(node, out, depth + 1);
+  }
+}
+
+function extractRecipeTextFromJsonLdNode(node: any): {
+  title?: string;
+  description?: string;
+  ingredients: string[];
+  instructions: string[];
+} {
+  const title = safeTrim(node?.name ?? node?.headline, 200);
+  const description = safeTrim(node?.description, 600);
+
+  const ingredientsRaw = node?.recipeIngredient ?? node?.ingredients;
+  const ingredients =
+    typeof ingredientsRaw === 'string'
+      ? normalizeCaptionText(ingredientsRaw)
+          .split('\n')
+          .map((l) => l.trim())
+          .filter(Boolean)
+      : Array.isArray(ingredientsRaw)
+        ? ingredientsRaw.map((v) => (typeof v === 'string' ? v.trim() : '')).filter(Boolean).slice(0, 120)
+        : [];
+
+  const readInstruction = (value: any): string[] => {
+    if (!value) return [];
+    if (typeof value === 'string') return [value];
+    if (Array.isArray(value)) return value.flatMap(readInstruction);
+    if (typeof value === 'object') {
+      const text = safeTrim(value.text, 600);
+      if (text) return [text];
+      if (Array.isArray(value.itemListElement)) return readInstruction(value.itemListElement);
+    }
+    return [];
+  };
+
+  const instructions = readInstruction(node?.recipeInstructions)
+    .map((s) => normalizeWhitespace(s))
+    .filter(Boolean)
+    .slice(0, 80);
+
+  return { title, description, ingredients, instructions };
+}
+
+function extractVisibleTextFromHtml(html: string): string {
+  let out = html;
+  out = out.replace(/<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+  out = out.replace(/<\s*br\s*\/?>/gi, '\n');
+  out = out.replace(/<\/(p|div|li|h1|h2|h3|h4|tr|section|article)>/gi, '\n');
+  out = out.replace(/<[^>]+>/g, ' ');
+  out = decodeHtmlEntities(out);
+  return normalizeCaptionText(out);
+}
+
+function pickRecipeTextSnippet(text: string): string {
+  if (!text) return '';
+  const lower = text.toLowerCase();
+  const idx =
+    lower.indexOf('ingredients') >= 0
+      ? lower.indexOf('ingredients')
+      : lower.indexOf('instructions') >= 0
+        ? lower.indexOf('instructions')
+        : lower.indexOf('directions') >= 0
+          ? lower.indexOf('directions')
+          : lower.indexOf('method') >= 0
+            ? lower.indexOf('method')
+            : -1;
+  const start = idx >= 0 ? idx : 0;
+  return text.slice(start, start + 14_000);
+}
+
+async function fetchRecipeWebsiteSource(
+  websiteUrl: string,
+  debug?: (event: string, meta?: Record<string, unknown>) => void,
+): Promise<{ finalUrl: string; caption: string; extractedFrom: ExtractedFrom[] } | null> {
+  const headers = {
+    'user-agent':
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'accept-language': 'en-US,en;q=0.9',
+  } satisfies Record<string, string>;
+
+  debug?.('website.fetch.start', { url: sanitizeUrlForLog(websiteUrl) });
+
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(websiteUrl, { method: 'GET', redirect: 'follow', headers }, 15_000);
+  } catch (error) {
+    debug?.('website.fetch.error', { url: sanitizeUrlForLog(websiteUrl), message: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+
+  // Re-check final URL after redirects.
+  let finalUrl: string;
+  try {
+    finalUrl = ensureSafeHttpUrl(res.url, 'recipe website URL');
+  } catch {
+    debug?.('website.fetch.unsafe_final_url', { finalUrl: sanitizeUrlForLog(res.url) });
+    return null;
+  }
+
+  const contentType = normalizeContentType(res.headers.get('content-type'));
+  debug?.('website.fetch.ok', { url: sanitizeUrlForLog(websiteUrl), finalUrl: sanitizeUrlForLog(finalUrl), status: res.status, contentType });
+  if (!res.ok) return null;
+  if (contentType && !contentType.includes('text/html')) return null;
+
+  let bytes: Buffer;
+  try {
+    bytes = await readBodyToBufferWithLimit(res, MAX_RECIPE_WEBSITE_BYTES, 'Recipe website page');
+  } catch (error) {
+    debug?.('website.read.error', { finalUrl: sanitizeUrlForLog(finalUrl), message: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+
+  const html = bytes.toString('utf8');
+  debug?.('website.html.fetched', { finalUrl: sanitizeUrlForLog(finalUrl), bytes: bytes.length, hasJsonLd: html.includes('application/ld+json') });
+
+  const scripts = extractJsonLdScripts(html);
+  for (const script of scripts) {
+    let parsed: any;
+    try {
+      parsed = JSON.parse(script);
+    } catch {
+      continue;
+    }
+
+    const recipeNodes: any[] = [];
+    collectRecipeNodes(parsed, recipeNodes);
+    if (recipeNodes.length === 0) continue;
+
+    for (const node of recipeNodes.slice(0, 2)) {
+      const recipe = extractRecipeTextFromJsonLdNode(node);
+      if (recipe.ingredients.length === 0) continue;
+
+      const lines: string[] = [`Recipe website: ${finalUrl}`];
+      if (recipe.title) lines.push(`Title: ${recipe.title}`);
+      if (recipe.description) lines.push(`Description: ${recipe.description}`);
+      lines.push('', 'Ingredients:');
+      for (const ing of recipe.ingredients.slice(0, 120)) lines.push(`- ${ing}`);
+      if (recipe.instructions.length) {
+        lines.push('', 'Instructions:');
+        recipe.instructions.slice(0, 80).forEach((step, idx) => {
+          lines.push(`${idx + 1}. ${step}`);
+        });
+      }
+
+      const caption = normalizeCaptionText(lines.join('\n'));
+      if (!caption) continue;
+      debug?.('website.jsonld.recipe.found', { finalUrl: sanitizeUrlForLog(finalUrl), title: recipe.title ?? null, ingredients: recipe.ingredients.length });
+      return { finalUrl, caption, extractedFrom: ['recipe_website_jsonld'] };
+    }
+  }
+
+  const visible = extractVisibleTextFromHtml(html);
+  const snippet = pickRecipeTextSnippet(visible);
+  if (!snippet) return null;
+  const snippetLower = snippet.toLowerCase();
+  const hasIngredients = snippetLower.includes('ingredients');
+  if (!hasIngredients) return null;
+
+  const caption = normalizeCaptionText([`Recipe website: ${finalUrl}`, '', snippet].join('\n'));
+  debug?.('website.html.snippet.ready', { finalUrl: sanitizeUrlForLog(finalUrl), snippetLength: snippet.length });
+  return { finalUrl, caption, extractedFrom: ['recipe_website_html'] };
+}
+
 async function fetchCaptionFromOEmbed(
   sourceUrl: string,
   platform: ImportSource['platform'],
@@ -430,6 +692,153 @@ async function fetchCaptionFromOEmbed(
     thumbnailUrl: thumbnailUrl || undefined,
     extractedFrom: [titleTag],
   };
+}
+
+type VideoResolverResult = {
+  videoUrl: string;
+  extractedFrom: ExtractedFrom[];
+};
+
+function readEnvString(name: string, maxLen: number): string {
+  const raw = (process.env[name] ?? '').trim();
+  if (!raw) return '';
+  return raw.slice(0, maxLen);
+}
+
+function isBlockedHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === '0.0.0.0' || host === '127.0.0.1' || host === '::1') return true;
+  if (host === '169.254.169.254') return true; // AWS metadata
+
+  // Block private IP literals to reduce SSRF risk (does not cover DNS resolution).
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    const parts = host.split('.').map((p) => Number.parseInt(p, 10));
+    if (parts.some((p) => !Number.isFinite(p) || p < 0 || p > 255)) return true;
+
+    const [a, b] = parts;
+    if (a === 10) return true;
+    if (a === 127) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+    if (a === 169 && b === 254) return true;
+  }
+
+  return false;
+}
+
+function ensureSafeHttpUrl(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) throw new AiValidationError(`Missing ${label}.`);
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new AiValidationError(`Invalid ${label}.`);
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new AiValidationError(`Invalid ${label} protocol.`);
+  }
+  if (!parsed.hostname || isBlockedHost(parsed.hostname)) {
+    throw new AiValidationError(`Unsafe ${label}.`);
+  }
+  return parsed.toString();
+}
+
+async function resolveVideoViaResolver(
+  sourceUrl: string,
+  platform: ImportSource['platform'],
+  debug?: (event: string, meta?: Record<string, unknown>) => void,
+): Promise<VideoResolverResult | null> {
+  const endpointRaw = readEnvString('AI_IMPORT_VIDEO_RESOLVER_URL', 800);
+  if (!endpointRaw) return null;
+
+  const endpoint = ensureSafeHttpUrl(endpointRaw, 'video resolver URL');
+  const token = readEnvString('AI_IMPORT_VIDEO_RESOLVER_TOKEN', 500);
+
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    accept: 'application/json',
+    'user-agent':
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  };
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  debug?.('resolver.fetch.start', {
+    endpoint: sanitizeUrlForLog(endpoint),
+    platform,
+    url: sanitizeUrlForLog(sourceUrl),
+  });
+
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      endpoint,
+      {
+        method: 'POST',
+        redirect: 'follow',
+        headers,
+        body: JSON.stringify({ url: sourceUrl, platform }),
+      },
+      18_000,
+    );
+  } catch (error) {
+    debug?.('resolver.fetch.error', {
+      endpoint: sanitizeUrlForLog(endpoint),
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+
+  const contentType = normalizeContentType(res.headers.get('content-type'));
+  debug?.('resolver.fetch.ok', {
+    endpoint: sanitizeUrlForLog(endpoint),
+    status: res.status,
+    contentType,
+  });
+  if (!res.ok) return null;
+  if (!contentType.includes('application/json') && contentType !== '') return null;
+
+  let bytes: Buffer;
+  try {
+    bytes = await readBodyToBufferWithLimit(res, MAX_RESOLVER_BYTES, 'Video resolver response');
+  } catch (error) {
+    debug?.('resolver.read.error', {
+      endpoint: sanitizeUrlForLog(endpoint),
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+
+  let payload: any;
+  try {
+    payload = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    debug?.('resolver.parse.error', { endpoint: sanitizeUrlForLog(endpoint), bytes: bytes.length });
+    return null;
+  }
+
+  const videoUrlRaw =
+    typeof payload?.videoUrl === 'string'
+      ? payload.videoUrl
+      : typeof payload?.url === 'string'
+        ? payload.url
+        : typeof payload?.data?.videoUrl === 'string'
+          ? payload.data.videoUrl
+          : typeof payload?.data?.url === 'string'
+            ? payload.data.url
+            : '';
+
+  if (!videoUrlRaw) {
+    debug?.('resolver.result.missing', { endpoint: sanitizeUrlForLog(endpoint) });
+    return null;
+  }
+
+  const videoUrl = ensureSafeHttpUrl(videoUrlRaw, 'resolved video URL');
+  debug?.('resolver.result.ok', { videoUrl: sanitizeUrlForLog(videoUrl) });
+
+  return { videoUrl, extractedFrom: ['video_resolver'] };
 }
 
 function extractVideoUrlFromHtml(html: string, baseUrl: string): { url: string; extractedFrom: ExtractedFrom } | null {
@@ -800,9 +1209,11 @@ function validateImportedRecipes(raw: unknown, maxIngredients: number, maxRecipe
   }
 
   if (out.length === 0) {
-    throw new AiValidationError(
-      'No recipes found for that link. Try a post where the recipe is written in the caption/description.',
+    const error = new AiValidationError(
+      'No recipes found for that link. Try a post where the recipe is written in the caption/description, or one that links to the full recipe website.',
     );
+    (error as any).aiImportVideoReason = 'no_recipes';
+    throw error;
   }
 
   return out;
@@ -856,6 +1267,7 @@ export async function importMealFromVideo(
     mode: ImportVideoMealMode;
     extractedFrom: ExtractedFrom[];
     videoUrl?: string;
+    websiteUrl?: string;
   };
 }> {
   const provider = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
@@ -885,45 +1297,6 @@ export async function importMealFromVideo(
 
   try {
     const platform = guessPlatform(validated.url);
-    let source: ImportSource;
-
-    const oembed = await fetchCaptionFromOEmbed(validated.url, platform, record);
-    if (oembed) {
-      record('source.caption.ready', {
-        platform,
-        captionLength: oembed.caption.length,
-        hasThumbnail: Boolean(oembed.thumbnailUrl),
-        extractedFrom: oembed.extractedFrom,
-      });
-
-      source = {
-        mode: 'caption',
-        platform,
-        sourceUrl: validated.url,
-        extractedFrom: oembed.extractedFrom,
-        caption: oembed.caption,
-        thumbnailUrl: oembed.thumbnailUrl,
-      };
-    } else {
-      record('source.caption.missing', { platform });
-      if (platform !== 'other') {
-        throw new AiValidationError(
-          'Could not read the caption/description for that link. Try a public post, or try another link.',
-        );
-      }
-
-      const resolvedVideo = await resolveVideoFromUrl(validated.url, record);
-      source = {
-        mode: 'video',
-        platform,
-        sourceUrl: validated.url,
-        extractedFrom: resolvedVideo.extractedFrom,
-        videoUrl: resolvedVideo.videoUrl,
-        videoBase64: resolvedVideo.videoBase64,
-        videoMimeType: resolvedVideo.videoMimeType,
-      };
-    }
-
     const model = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
       model,
@@ -944,69 +1317,208 @@ export async function importMealFromVideo(
       '- category should be one of: Produce, Pantry, Meat, Dairy, Bakery, Other (or null)',
     ].join('\n');
 
-    const userPrompt = buildImportPrompt(source, maxIngredients, maxRecipes);
+    const runGemini = async (source: ImportSource): Promise<GeneratedMeal[]> => {
+      const userPrompt = buildImportPrompt(source, maxIngredients, maxRecipes);
 
-    record('gemini.request', {
-      model,
-      platform: source.platform,
-      mode: source.mode,
-      extractedFrom: source.extractedFrom,
-      ...(source.mode === 'video'
-        ? { videoUrl: sanitizeUrlForLog(source.videoUrl) }
-        : { captionLength: source.caption.length }),
-      maxIngredients,
-      maxRecipes,
-    });
-
-    const parts =
-      source.mode === 'video'
-        ? [{ inlineData: { mimeType: source.videoMimeType, data: source.videoBase64 } }, { text: userPrompt }]
-        : [{ text: userPrompt }];
-
-    const res = await fetchWithTimeout(
-      endpoint,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts,
-            },
-          ],
-          systemInstruction: { parts: [{ text: systemInstruction }] },
-          generationConfig: {
-            temperature: 0.25,
-            maxOutputTokens: 1800,
-            responseMimeType: 'application/json',
-          },
-        }),
-      },
-      45_000,
-    );
-
-    const json = (await res.json().catch(() => null)) as GeminiGenerateResponse | null;
-
-    if (!res.ok) {
-      const message = json?.error?.message || `Gemini request failed (${res.status}).`;
-      throw new AiProviderError(message);
-    }
-
-    const text = extractTextFromGemini(json ?? {});
-    const parsed = extractJsonObject(text);
-    record('gemini.response.parsed', { textLength: text.length });
-
-    const recipes = validateImportedRecipes(parsed, maxIngredients, maxRecipes);
-    record('recipes.validated', { count: recipes.length, names: recipes.map((r) => r.name).slice(0, 5) });
-
-    return {
-      recipes,
-      meta: {
+      record('gemini.request', {
+        model,
         platform: source.platform,
         mode: source.mode,
         extractedFrom: source.extractedFrom,
-        videoUrl: source.mode === 'video' ? source.videoUrl : undefined,
+        ...(source.mode === 'video'
+          ? { videoUrl: sanitizeUrlForLog(source.videoUrl) }
+          : { captionLength: source.caption.length }),
+        maxIngredients,
+        maxRecipes,
+      });
+
+      const parts =
+        source.mode === 'video'
+          ? [{ inlineData: { mimeType: source.videoMimeType, data: source.videoBase64 } }, { text: userPrompt }]
+          : [{ text: userPrompt }];
+
+      const res = await fetchWithTimeout(
+        endpoint,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts,
+              },
+            ],
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            generationConfig: {
+              temperature: 0.25,
+              maxOutputTokens: 1800,
+              responseMimeType: 'application/json',
+            },
+          }),
+        },
+        45_000,
+      );
+
+      const json = (await res.json().catch(() => null)) as GeminiGenerateResponse | null;
+
+      if (!res.ok) {
+        const message = json?.error?.message || `Gemini request failed (${res.status}).`;
+        throw new AiProviderError(message);
+      }
+
+      const text = extractTextFromGemini(json ?? {});
+      const parsed = extractJsonObject(text);
+      record('gemini.response.parsed', { textLength: text.length });
+
+      const recipes = validateImportedRecipes(parsed, maxIngredients, maxRecipes);
+      record('recipes.validated', { count: recipes.length, names: recipes.map((r) => r.name).slice(0, 5) });
+      return recipes;
+    };
+
+    const tryBuildVideoSource = async (): Promise<Extract<ImportSource, { mode: 'video' }> | null> => {
+      const resolver = await resolveVideoViaResolver(validated.url, platform, record);
+      if (resolver) {
+        const resolvedVideo = await resolveVideoFromUrl(resolver.videoUrl, record);
+        const extractedFrom: ExtractedFrom[] = [...resolver.extractedFrom, ...resolvedVideo.extractedFrom];
+
+        record('source.video.ready', {
+          platform,
+          extractedFrom,
+          videoUrl: sanitizeUrlForLog(resolvedVideo.videoUrl),
+          mimeType: resolvedVideo.videoMimeType,
+          base64Chars: resolvedVideo.videoBase64.length,
+        });
+
+        return {
+          mode: 'video',
+          platform,
+          sourceUrl: validated.url,
+          extractedFrom,
+          videoUrl: resolvedVideo.videoUrl,
+          videoBase64: resolvedVideo.videoBase64,
+          videoMimeType: resolvedVideo.videoMimeType,
+        } satisfies Extract<ImportSource, { mode: 'video' }>;
+      }
+
+      // Best-effort fallback for non-social direct video URLs.
+      if (platform !== 'other') return null;
+
+      const resolvedVideo = await resolveVideoFromUrl(validated.url, record);
+      record('source.video.direct.ready', {
+        platform,
+        extractedFrom: resolvedVideo.extractedFrom,
+        videoUrl: sanitizeUrlForLog(resolvedVideo.videoUrl),
+        mimeType: resolvedVideo.videoMimeType,
+        base64Chars: resolvedVideo.videoBase64.length,
+      });
+
+      return {
+        mode: 'video',
+        platform,
+        sourceUrl: validated.url,
+        extractedFrom: resolvedVideo.extractedFrom,
+        videoUrl: resolvedVideo.videoUrl,
+        videoBase64: resolvedVideo.videoBase64,
+        videoMimeType: resolvedVideo.videoMimeType,
+      } satisfies Extract<ImportSource, { mode: 'video' }>;
+    };
+
+    const oembed = await fetchCaptionFromOEmbed(validated.url, platform, record);
+    if (oembed) {
+      record('source.caption.ready', {
+        platform,
+        captionLength: oembed.caption.length,
+        hasThumbnail: Boolean(oembed.thumbnailUrl),
+        extractedFrom: oembed.extractedFrom,
+      });
+
+      const captionSource: ImportSource = {
+        mode: 'caption',
+        platform,
+        sourceUrl: validated.url,
+        extractedFrom: oembed.extractedFrom,
+        caption: oembed.caption,
+        thumbnailUrl: oembed.thumbnailUrl,
+      };
+
+      try {
+        const recipes = await runGemini(captionSource);
+        return { recipes, meta: { platform, mode: captionSource.mode, extractedFrom: captionSource.extractedFrom } };
+      } catch (error) {
+        const reason = (error as any)?.aiImportVideoReason;
+        if (reason === 'no_recipes') {
+          const videoSource = await tryBuildVideoSource();
+          if (videoSource) {
+            try {
+              const recipes = await runGemini(videoSource);
+              return {
+                recipes,
+                meta: {
+                  platform,
+                  mode: videoSource.mode,
+                  extractedFrom: videoSource.extractedFrom,
+                  videoUrl: videoSource.videoUrl,
+                },
+              };
+            } catch (videoError) {
+              const videoReason = (videoError as any)?.aiImportVideoReason;
+              if (videoReason !== 'no_recipes') throw videoError;
+            }
+          }
+
+          const websiteCandidates = extractCandidateWebsiteUrls(captionSource.caption);
+          record('source.website.candidates', { platform, count: websiteCandidates.length });
+
+          for (const websiteUrl of websiteCandidates.slice(0, 3)) {
+            const website = await fetchRecipeWebsiteSource(websiteUrl, record);
+            if (!website) continue;
+
+            const websiteSource: ImportSource = {
+              mode: 'website',
+              platform,
+              sourceUrl: validated.url,
+              extractedFrom: [...captionSource.extractedFrom, ...website.extractedFrom],
+              caption: website.caption,
+            };
+
+            try {
+              const recipes = await runGemini(websiteSource);
+              return {
+                recipes,
+                meta: {
+                  platform,
+                  mode: websiteSource.mode,
+                  extractedFrom: websiteSource.extractedFrom,
+                  websiteUrl: website.finalUrl,
+                },
+              };
+            } catch (websiteError) {
+              const websiteReason = (websiteError as any)?.aiImportVideoReason;
+              if (websiteReason !== 'no_recipes') throw websiteError;
+            }
+          }
+        }
+        throw error;
+      }
+    }
+
+    record('source.caption.missing', { platform });
+    const videoSource = await tryBuildVideoSource();
+    if (!videoSource) {
+      throw new AiValidationError(
+        'Could not read the caption/description for that link, and video analysis is not configured yet.',
+      );
+    }
+
+    const recipes = await runGemini(videoSource);
+    return {
+      recipes,
+      meta: {
+        platform,
+        mode: videoSource.mode,
+        extractedFrom: videoSource.extractedFrom,
+        videoUrl: videoSource.videoUrl,
       },
     };
   } catch (error) {
