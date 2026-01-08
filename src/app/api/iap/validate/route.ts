@@ -1,10 +1,24 @@
 import { NextResponse } from 'next/server';
+import { randomUUID, createHash } from 'crypto';
 import { db } from '@/db';
 import { subscriptions } from '@/db/schema';
+import { eq } from 'drizzle-orm';
+import { getUserIdFromRequest } from '@/lib/requestAuth';
+import { isBodyTooLarge } from '@/lib/validation';
+import { GooglePlayValidationError, validateGooglePlaySubscription } from '@/lib/googlePlay';
 
 const APPLE_VERIFY_RECEIPT_URL = 'https://buy.itunes.apple.com/verifyReceipt';
 const APPLE_SANDBOX_URL = 'https://sandbox.itunes.apple.com/verifyReceipt';
 const SHARED_SECRET = process.env.APPLE_SHARED_SECRET;
+
+const MAX_RECEIPT_LENGTH = 200_000; // bytes/chars (base64 string)
+const MAX_ANDROID_PURCHASE_TOKEN_LENGTH = 4_096;
+const MAX_ANDROID_PRODUCT_ID_LENGTH = 200;
+const GOOGLE_PLAY_PACKAGE_NAME = process.env.GOOGLE_PLAY_PACKAGE_NAME;
+
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const RATE_LIMIT_MAX_REQUESTS = 12;
+const rateLimitByUser = new Map<string, { resetAtMs: number; count: number }>();
 
 function mask(value: string, prefix = 6, suffix = 4) {
   if (!value) return '';
@@ -20,24 +34,186 @@ function isRetryableAppleStatus(status: unknown): boolean {
   return code === 21005 || (code >= 21100 && code <= 21199);
 }
 
-export async function POST(request: Request) {
-  try {
-    const { receipt, userId } = await request.json();
+function jsonError(status: number, payload: Record<string, unknown>, requestId: string) {
+  const res = NextResponse.json({ ...payload, requestId }, { status });
+  res.headers.set('x-request-id', requestId);
+  res.headers.set('cache-control', 'no-store');
+  return res;
+}
 
-    if (!receipt || !userId) {
-      return NextResponse.json({ error: 'Missing receipt or userId' }, { status: 400 });
+export async function POST(request: Request) {
+  const requestId = randomUUID();
+
+  try {
+    const userId = await getUserIdFromRequest(request);
+    if (!userId) {
+      return jsonError(401, { error: 'Unauthorized' }, requestId);
     }
 
-    console.log('[IAP_VALIDATE] request', { userId: mask(userId), receiptLen: String(receipt).length });
+    if (isBodyTooLarge(request, 250_000)) {
+      return jsonError(413, { error: 'Payload too large' }, requestId);
+    }
+
+    const nowMs = Date.now();
+    const existing = rateLimitByUser.get(userId);
+    if (!existing || existing.resetAtMs <= nowMs) {
+      rateLimitByUser.set(userId, { resetAtMs: nowMs + RATE_LIMIT_WINDOW_MS, count: 1 });
+    } else if (existing.count >= RATE_LIMIT_MAX_REQUESTS) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((existing.resetAtMs - nowMs) / 1000));
+      const res = jsonError(
+        429,
+        { error: 'Too many requests. Please try again later.' },
+        requestId,
+      );
+      res.headers.set('retry-after', String(retryAfterSeconds));
+      return res;
+    } else {
+      existing.count += 1;
+      rateLimitByUser.set(userId, existing);
+    }
+
+    const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+    const platformRaw = typeof body?.platform === 'string' ? body.platform.trim() : '';
+    const platform: 'ios' | 'android' = platformRaw === 'android' ? 'android' : 'ios';
+    const receipt = typeof body?.receipt === 'string' ? body.receipt.trim() : '';
+    const claimedUserId = typeof body?.userId === 'string' ? body.userId.trim() : null;
+    const requestedProductId = typeof body?.productId === 'string' ? body.productId.trim() : '';
+    const packageName = typeof body?.packageName === 'string' ? body.packageName.trim() : '';
+
+    if (claimedUserId && claimedUserId !== userId) {
+      return jsonError(403, { error: 'Forbidden' }, requestId);
+    }
+
+    if (!receipt) {
+      return jsonError(400, { error: 'Missing receipt' }, requestId);
+    }
+
+    if (platform === 'android') {
+      if (receipt.length > MAX_ANDROID_PURCHASE_TOKEN_LENGTH) {
+        return jsonError(413, { error: 'Receipt is too large' }, requestId);
+      }
+
+      if (!requestedProductId) {
+        return jsonError(400, { error: 'Missing productId' }, requestId);
+      }
+      if (requestedProductId.length > MAX_ANDROID_PRODUCT_ID_LENGTH) {
+        return jsonError(413, { error: 'productId is too large' }, requestId);
+      }
+
+      if (!GOOGLE_PLAY_PACKAGE_NAME) {
+        console.error('[IAP_VALIDATE] GOOGLE_PLAY_PACKAGE_NAME is not set', { requestId });
+        return jsonError(
+          500,
+          { error: 'Server misconfigured: Android receipt validation unavailable.' },
+          requestId,
+        );
+      }
+
+      if (packageName && packageName !== GOOGLE_PLAY_PACKAGE_NAME) {
+        return jsonError(400, { error: 'Invalid packageName' }, requestId);
+      }
+
+      console.log('[IAP_VALIDATE] request', {
+        requestId,
+        userId: mask(userId),
+        platform,
+        receiptLen: receipt.length,
+        productId: requestedProductId,
+      });
+
+      if (!db) {
+        throw new Error('Database connection not available');
+      }
+
+      const tokenHash = createHash('sha256').update(receipt).digest('hex');
+      const originalTransactionId = `google:token:${tokenHash}`;
+
+      const existingForToken = await db
+        .select({ userId: subscriptions.userId })
+        .from(subscriptions)
+        .where(eq(subscriptions.originalTransactionId, originalTransactionId))
+        .limit(1);
+      if (existingForToken.length && existingForToken[0].userId !== userId) {
+        return jsonError(409, { error: 'Receipt already linked to another account.' }, requestId);
+      }
+
+      let googleStatus: {
+        expiresAt: Date;
+        isTrial: boolean;
+        isActive: boolean;
+        autoRenewStatus: boolean;
+      };
+      try {
+        googleStatus = await validateGooglePlaySubscription({
+          packageName: GOOGLE_PLAY_PACKAGE_NAME,
+          subscriptionId: requestedProductId,
+          purchaseToken: receipt,
+        });
+      } catch (err: unknown) {
+        if (err instanceof GooglePlayValidationError) {
+          return jsonError(
+            err.status,
+            { error: err.message, retryable: err.retryable || undefined },
+            requestId,
+          );
+        }
+        throw err;
+      }
+
+      await db
+        .insert(subscriptions)
+        .values({
+          userId,
+          originalTransactionId,
+          productId: requestedProductId,
+          expiresAt: googleStatus.expiresAt,
+          isTrial: googleStatus.isTrial,
+          isActive: googleStatus.isActive,
+          autoRenewStatus: googleStatus.autoRenewStatus,
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: subscriptions.userId,
+          set: {
+            originalTransactionId,
+            productId: requestedProductId,
+            expiresAt: googleStatus.expiresAt,
+            isTrial: googleStatus.isTrial,
+            isActive: googleStatus.isActive,
+            autoRenewStatus: googleStatus.autoRenewStatus,
+            updatedAt: new Date(),
+          },
+        });
+
+      const res = NextResponse.json(
+        {
+          success: true,
+          subscription: {
+            productId: requestedProductId,
+            expiresAt: googleStatus.expiresAt,
+            isTrial: googleStatus.isTrial,
+            isActive: googleStatus.isActive,
+          },
+        },
+        { status: 200 },
+      );
+      res.headers.set('x-request-id', requestId);
+      res.headers.set('cache-control', 'no-store');
+      return res;
+    }
+
+    if (receipt.length > MAX_RECEIPT_LENGTH) {
+      return jsonError(413, { error: 'Receipt is too large' }, requestId);
+    }
+
+    console.log('[IAP_VALIDATE] request', { requestId, userId: mask(userId), platform, receiptLen: receipt.length });
 
     if (!SHARED_SECRET) {
-      console.error('APPLE_SHARED_SECRET is not set');
-      return NextResponse.json(
-        {
-          error:
-            'Server misconfigured: APPLE_SHARED_SECRET is not set. Configure your App Store Connect app-specific shared secret on the server to validate subscriptions.',
-        },
-        { status: 500 },
+      console.error('[IAP_VALIDATE] APPLE_SHARED_SECRET is not set', { requestId });
+      return jsonError(
+        500,
+        { error: 'Server misconfigured: receipt validation unavailable.' },
+        requestId,
       );
     }
 
@@ -64,17 +240,22 @@ export async function POST(request: Request) {
       });
 
       if (isRetryableAppleStatus(appleResponse.status)) {
-        return NextResponse.json(
+        return jsonError(
+          503,
           {
             error: 'Receipt validation temporarily unavailable. Please try again.',
             status: appleResponse.status,
             retryable: true,
           },
-          { status: 503 },
+          requestId,
         );
       }
 
-      return NextResponse.json({ error: 'Receipt validation failed', status: appleResponse.status }, { status: 400 });
+      return jsonError(
+        400,
+        { error: 'Receipt validation failed', status: appleResponse.status },
+        requestId,
+      );
     }
 
     // 3. Parse receipt info (pick the most recent transaction by expiry time)
@@ -84,7 +265,7 @@ export async function POST(request: Request) {
       return bMs - aMs;
     })[0];
     if (!latestReceiptInfo) {
-      return NextResponse.json({ error: 'No receipt info found' }, { status: 400 });
+      return jsonError(400, { error: 'No receipt info found' }, requestId);
     }
 
     const expiresDateMs = parseInt(latestReceiptInfo.expires_date_ms, 10);
@@ -103,6 +284,7 @@ export async function POST(request: Request) {
     }
 
     console.log('[IAP_VALIDATE] parsed', {
+      requestId,
       userId: mask(userId),
       env: validationEnv,
       productId,
@@ -111,6 +293,15 @@ export async function POST(request: Request) {
       isActive,
       originalTransactionId: mask(originalTransactionId),
     });
+
+    const existingForTransaction = await db
+      .select({ userId: subscriptions.userId })
+      .from(subscriptions)
+      .where(eq(subscriptions.originalTransactionId, originalTransactionId))
+      .limit(1);
+    if (existingForTransaction.length && existingForTransaction[0].userId !== userId) {
+      return jsonError(409, { error: 'Receipt already linked to another account.' }, requestId);
+    }
 
     // 4. Update Database
     try {
@@ -134,29 +325,35 @@ export async function POST(request: Request) {
             expiresAt,
             isTrial,
             isActive,
+            autoRenewStatus: true,
             updatedAt: new Date(),
           },
         });
-      console.log('[IAP_VALIDATE] upserted subscription', { userId: mask(userId), productId });
+      console.log('[IAP_VALIDATE] upserted subscription', { requestId, userId: mask(userId), productId });
     } catch (dbError) {
-      console.error('[IAP_VALIDATE] failed to upsert subscription', { userId: mask(userId), productId, dbError });
+      console.error('[IAP_VALIDATE] failed to upsert subscription', { requestId, userId: mask(userId), productId, dbError });
       throw dbError;
     }
 
-    return NextResponse.json({
-      success: true,
-      subscription: {
-        productId,
-        expiresAt,
-        isTrial,
-        isActive,
+    const res = NextResponse.json(
+      {
+        success: true,
+        subscription: {
+          productId,
+          expiresAt,
+          isTrial,
+          isActive,
+        },
       },
-    });
+      { status: 200 },
+    );
+    res.headers.set('x-request-id', requestId);
+    res.headers.set('cache-control', 'no-store');
+    return res;
 
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Internal Server Error';
-    console.error('Error validating receipt:', error);
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error('[IAP_VALIDATE] Error validating receipt', { requestId, error });
+    return jsonError(500, { error: 'Internal Server Error' }, requestId);
   }
 }
 

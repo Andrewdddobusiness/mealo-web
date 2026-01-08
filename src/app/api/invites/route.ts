@@ -5,6 +5,27 @@ import { invites, household_members } from '../../../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import { addDays } from 'date-fns';
+import { isBodyTooLarge, validateUuid } from '@/lib/validation';
+
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+const RATE_LIMIT_MAX_PER_USER = 30;
+const rateLimitByUser = new Map<string, { resetAtMs: number; count: number }>();
+
+function checkRateLimit(userId: string) {
+  const nowMs = Date.now();
+  const existing = rateLimitByUser.get(userId);
+  if (!existing || existing.resetAtMs <= nowMs) {
+    rateLimitByUser.set(userId, { resetAtMs: nowMs + RATE_LIMIT_WINDOW_MS, count: 1 });
+    return { allowed: true as const };
+  }
+  if (existing.count >= RATE_LIMIT_MAX_PER_USER) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((existing.resetAtMs - nowMs) / 1000));
+    return { allowed: false as const, retryAfterSeconds };
+  }
+  existing.count += 1;
+  rateLimitByUser.set(userId, existing);
+  return { allowed: true as const };
+}
 
 export async function POST(req: Request) {
   try {
@@ -13,15 +34,25 @@ export async function POST(req: Request) {
       return new NextResponse("Unauthorized", { status: 401 });
     }
 
+    const limit = checkRateLimit(userId);
+    if (!limit.allowed) {
+      const res = new NextResponse('Too many requests. Please try again later.', { status: 429 });
+      res.headers.set('retry-after', String(limit.retryAfterSeconds));
+      return res;
+    }
+
     if (!db) {
         return new NextResponse("Database not configured", { status: 500 });
     }
 
-    const body = await req.json();
-    const { householdId } = body;
+    if (isBodyTooLarge(req, 10_000)) {
+      return new NextResponse('Payload too large', { status: 413 });
+    }
 
+    const body = await req.json().catch(() => null);
+    const householdId = validateUuid((body as any)?.householdId);
     if (!householdId) {
-        return new NextResponse("Household ID is required", { status: 400 });
+      return new NextResponse('Invalid householdId', { status: 400 });
     }
 
     // Verify user is a member (or owner?) of the household
@@ -56,7 +87,9 @@ export async function POST(req: Request) {
     const webUrl = process.env.EXPO_PUBLIC_WEB_APP_URL || 'https://mealo.website';
     const inviteUrl = `${webUrl}/invite/${token}`;
 
-    return NextResponse.json({ inviteUrl, token, expiresAt });
+    const res = NextResponse.json({ inviteUrl, expiresAt });
+    res.headers.set('cache-control', 'no-store');
+    return res;
 
   } catch (error) {
     console.error('[INVITES_POST]', error);

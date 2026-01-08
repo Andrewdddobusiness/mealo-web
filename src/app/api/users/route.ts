@@ -19,11 +19,15 @@ export async function POST(req: Request) {
       const bearer = authHeader?.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : null;
       const dotCount = bearer ? (bearer.match(/\./g) || []).length : 0;
 
-      console.error("[USERS_POST] Unauthorized", {
-        hasAuthHeader: !!authHeader,
-        bearerLike: !!bearer,
-        tokenDots: dotCount,
-      });
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[USERS_POST] Unauthorized", {
+          hasAuthHeader: !!authHeader,
+          bearerLike: !!bearer,
+          tokenDots: dotCount,
+        });
+      } else {
+        console.error("[USERS_POST] Unauthorized");
+      }
 
       const reason = !authHeader ? "missing_authorization" : !bearer ? "not_bearer" : "invalid_token";
       return new NextResponse(`Unauthorized (${reason})`, { status: 401 });
@@ -39,7 +43,11 @@ export async function POST(req: Request) {
     const effectiveId = requestedId ?? userId;
 
     if (effectiveId !== userId) {
-      console.error("[USERS_POST] Forbidden: id mismatch", { requestedId, userId });
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[USERS_POST] Forbidden: id mismatch", { requestedId, userId });
+      } else {
+        console.error("[USERS_POST] Forbidden: id mismatch");
+      }
       return new NextResponse("Forbidden", { status: 403 });
     }
 
@@ -71,7 +79,9 @@ export async function POST(req: Request) {
       return new NextResponse("Missing required fields (email)", { status: 400 });
     }
 
-    console.log("[USERS_POST] Auth ok", { userId });
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[USERS_POST] Auth ok", { userId });
+    }
 
     const existing = await db.select().from(users).where(eq(users.id, effectiveId));
 

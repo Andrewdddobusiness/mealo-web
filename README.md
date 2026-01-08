@@ -41,6 +41,18 @@ You can start editing the page by modifying `src/app/page.tsx`. The page auto-up
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Ingredient catalogue seeding (autocomplete)
+
+To seed/expand global ingredient suggestions (used by `/api/ingredients/suggest`) from the icon catalogue:
+
+```bash
+# Dry-run only (no DB writes)
+npm run seed:ingredients:catalog
+
+# Apply changes (writes to public.ingredients)
+node scripts/seed-ingredients-catalog.mjs --apply
+```
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

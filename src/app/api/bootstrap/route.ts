@@ -128,7 +128,16 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       user: userRows[0] ?? null,
-      subscription: subscriptionRows[0] ?? null,
+      subscription: subscriptionRows[0]
+        ? {
+            productId: subscriptionRows[0].productId,
+            expiresAt: subscriptionRows[0].expiresAt,
+            isTrial: subscriptionRows[0].isTrial,
+            isActive: subscriptionRows[0].isActive,
+            autoRenewStatus: subscriptionRows[0].autoRenewStatus,
+            updatedAt: subscriptionRows[0].updatedAt,
+          }
+        : null,
       households: householdsWithDetails,
       meals: formattedMeals,
       globalMeals: includeGlobalMeals ? formattedGlobalMeals : undefined,
@@ -138,4 +147,3 @@ export async function GET(req: Request) {
     return new NextResponse('Internal Error', { status: 500 });
   }
 }
-

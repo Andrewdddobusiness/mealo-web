@@ -5,6 +5,7 @@ import { db } from '../../../db';
 import { households, household_members, users, plans } from '../../../db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
+import { isBodyTooLarge, validateHouseholdName } from '@/lib/validation';
 
 export async function GET(req: Request) {
   try {
@@ -113,11 +114,14 @@ export async function POST(req: Request) {
     }
     const database = db;
 
-    const body = await req.json();
-    const { name } = body;
+    if (isBodyTooLarge(req, 10_000)) {
+      return new NextResponse('Payload too large', { status: 413 });
+    }
 
+    const body = await req.json().catch(() => null);
+    const name = validateHouseholdName((body as any)?.name);
     if (!name) {
-      return new NextResponse("Name is required", { status: 400 });
+      return new NextResponse('Invalid name', { status: 400 });
     }
 
     // Ensure the authenticated user exists in the DB before inserting FK-dependent rows.
@@ -195,7 +199,9 @@ export async function POST(req: Request) {
 
     const insertedHousehold = insertResult.rows?.[0] ?? newHousehold;
 
-    return NextResponse.json(insertedHousehold);
+    const res = NextResponse.json(insertedHousehold);
+    res.headers.set('cache-control', 'no-store');
+    return res;
 
   } catch (error) {
     console.error('[HOUSEHOLDS_POST]', error);

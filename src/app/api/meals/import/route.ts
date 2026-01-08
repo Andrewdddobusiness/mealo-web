@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { recordIngredientUsage } from '@/lib/ingredients';
 import { normalizeCuisine, normalizeIngredients, normalizeMealName } from '@/lib/normalizeMeal';
+import { isBodyTooLarge, validateUuid } from '@/lib/validation';
 import { db } from '../../../../db';
 import { meals, globalMeals, household_members } from '../../../../db/schema';
 import { eq, and, isNull, sql } from 'drizzle-orm';
@@ -41,11 +42,16 @@ export async function POST(req: Request) {
         return new NextResponse("Database not configured", { status: 500 });
     }
 
-    const body = await req.json();
-    const { globalMealId, householdId } = body;
+    if (isBodyTooLarge(req, 25_000)) {
+      return new NextResponse('Payload too large', { status: 413 });
+    }
+
+    const body = await req.json().catch(() => null);
+    const globalMealId = validateUuid((body as any)?.globalMealId);
+    const householdId = validateUuid((body as any)?.householdId);
 
     if (!globalMealId || !householdId) {
-        return new NextResponse("Missing required fields", { status: 400 });
+        return new NextResponse("Missing or invalid required fields", { status: 400 });
     }
 
     // 1. Verify membership
@@ -161,7 +167,9 @@ export async function POST(req: Request) {
       console.error('[MEAL_IMPORT_POST_INGREDIENT_USAGE]', error);
     }
 
-    return NextResponse.json(newMeal);
+    const res = NextResponse.json(newMeal);
+    res.headers.set('cache-control', 'no-store');
+    return res;
 
   } catch (error) {
     console.error('[MEAL_IMPORT_POST]', error);

@@ -4,6 +4,7 @@ import { db } from '../../../db';
 import { plans, household_members } from '../../../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
+import { isBodyTooLarge, validatePlanDate, validateUuid } from '@/lib/validation';
 
 export async function POST(req: Request) {
   try {
@@ -16,11 +17,18 @@ export async function POST(req: Request) {
         return new NextResponse("Database not configured", { status: 500 });
     }
 
-    const body = await req.json();
-    const { householdId, mealId, date, isCompleted } = body;
+    if (isBodyTooLarge(req, 25_000)) {
+      return new NextResponse('Payload too large', { status: 413 });
+    }
+
+    const body = await req.json().catch(() => null);
+    const householdId = validateUuid((body as any)?.householdId);
+    const mealId = validateUuid((body as any)?.mealId);
+    const date = validatePlanDate((body as any)?.date);
+    const isCompleted = (body as any)?.isCompleted;
 
     if (!householdId || !mealId || !date) {
-        return new NextResponse("Missing required fields", { status: 400 });
+      return new NextResponse('Missing or invalid required fields', { status: 400 });
     }
 
     // Verify membership
@@ -41,7 +49,7 @@ export async function POST(req: Request) {
       householdId,
       mealId,
       date,
-      isCompleted: isCompleted || false,
+      isCompleted: typeof isCompleted === 'boolean' ? isCompleted : false,
       createdAt: new Date()
     };
 
@@ -56,7 +64,9 @@ export async function POST(req: Request) {
       throw e;
     }
 
-    return NextResponse.json(newPlan);
+    const res = NextResponse.json(newPlan);
+    res.headers.set('cache-control', 'no-store');
+    return res;
 
   } catch (error) {
     console.error('[PLANS_POST]', error);
@@ -76,10 +86,10 @@ export async function DELETE(req: Request) {
         }
 
         const { searchParams } = new URL(req.url);
-        const id = searchParams.get('id');
+        const id = validateUuid(searchParams.get('id'));
 
         if (!id) {
-            return new NextResponse("ID is required", { status: 400 });
+            return new NextResponse("Invalid id", { status: 400 });
         }
 
         // We need to verify that the plan belongs to a household the user is in.
@@ -107,7 +117,9 @@ export async function DELETE(req: Request) {
 
         await db.delete(plans).where(eq(plans.id, id));
 
-        return NextResponse.json({ success: true });
+        const res = NextResponse.json({ success: true });
+        res.headers.set('cache-control', 'no-store');
+        return res;
 
     } catch (error) {
         console.error('[PLANS_DELETE]', error);

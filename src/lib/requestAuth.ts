@@ -8,26 +8,6 @@ function getBearerToken(req: Request): string | null {
   return token.length ? token : null;
 }
 
-function keyType(value: string | undefined): "live" | "test" | "unknown" | "missing" {
-  if (!value) return "missing";
-  if (value.startsWith("sk_live_") || value.startsWith("pk_live_")) return "live";
-  if (value.startsWith("sk_test_") || value.startsWith("pk_test_")) return "test";
-  return "unknown";
-}
-
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length < 2) return null;
-    const payloadB64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const padded = payloadB64.padEnd(payloadB64.length + ((4 - (payloadB64.length % 4)) % 4), "=");
-    const json = Buffer.from(padded, "base64").toString("utf8");
-    return JSON.parse(json) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
 export async function getUserIdFromRequest(req: Request): Promise<string | null> {
   const bearer = getBearerToken(req);
 
@@ -47,16 +27,10 @@ export async function getUserIdFromRequest(req: Request): Promise<string | null>
     } catch (e) {
       // If the Bearer token isn't a JWT Clerk can verify locally (common in native flows),
       // fall back to Clerk's request authentication which can validate other token types.
-      const decoded = decodeJwtPayload(bearer);
-      console.error("[Auth] verifyToken failed; falling back to authenticateRequest");
-      console.error("[Auth] Key types", {
-        clerkSecret: keyType(secretKey),
-        clerkPublishable: keyType(publishableKey),
-        tokenIss: decoded?.iss ?? "n/a",
-        tokenAud: decoded?.aud ?? "n/a",
-        tokenAzp: decoded?.azp ?? "n/a",
-      });
-      console.error(e);
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[Auth] verifyToken failed; falling back to authenticateRequest");
+        console.error(e);
+      }
 
       try {
         if (!publishableKey) {
@@ -72,8 +46,10 @@ export async function getUserIdFromRequest(req: Request): Promise<string | null>
         const authObj = requestState.toAuth();
         return authObj?.userId ?? null;
       } catch (fallbackError) {
-        console.error("[Auth] authenticateRequest fallback failed");
-        console.error(fallbackError);
+        if (process.env.NODE_ENV !== "production") {
+          console.error("[Auth] authenticateRequest fallback failed");
+          console.error(fallbackError);
+        }
         return null;
       }
     }

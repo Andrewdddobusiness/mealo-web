@@ -2,6 +2,15 @@ import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { recordIngredientUsage } from '@/lib/ingredients';
 import { normalizeCuisine, normalizeIngredients, normalizeMealName } from '@/lib/normalizeMeal';
+import {
+  isBodyTooLarge,
+  normalizeWhitespace,
+  sanitizeStringArray,
+  stripControlChars,
+  validateMealDescription,
+  validateMealName,
+  validateUuid,
+} from '@/lib/validation';
 import { db } from '../../../db';
 import { meals, household_members } from '../../../db/schema';
 import { eq, and, isNull, sql } from 'drizzle-orm';
@@ -28,6 +37,47 @@ function canonicalIngredientsKey(ingredients: unknown): string {
     .filter(Boolean)
     .sort();
   return parts.join(';');
+}
+
+const MAX_INGREDIENTS = 100;
+const MAX_INSTRUCTIONS = 60;
+
+function sanitizeIngredients(input: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(input)) return [];
+  const out: Array<Record<string, unknown>> = [];
+  for (const raw of input.slice(0, MAX_INGREDIENTS)) {
+    if (typeof raw === 'string') {
+      const name = normalizeWhitespace(stripControlChars(raw));
+      if (!name) continue;
+      out.push({ name: normalizeMealName(name) ?? name });
+      continue;
+    }
+
+    if (!raw || typeof raw !== 'object') continue;
+    const obj = raw as Record<string, unknown>;
+    const name = normalizeWhitespace(stripControlChars(typeof obj.name === 'string' ? obj.name : ''));
+    if (!name) continue;
+
+    const item: Record<string, unknown> = { name: normalizeMealName(name) ?? name };
+
+    const quantity = obj.quantity;
+    if (typeof quantity === 'number' && Number.isFinite(quantity)) {
+      item.quantity = quantity;
+    } else if (typeof quantity === 'string') {
+      const parsed = Number(quantity);
+      if (Number.isFinite(parsed)) item.quantity = parsed;
+    }
+
+    const unit = typeof obj.unit === 'string' ? normalizeWhitespace(stripControlChars(obj.unit)).slice(0, 24) : '';
+    if (unit) item.unit = unit;
+
+    const category =
+      typeof obj.category === 'string' ? normalizeWhitespace(stripControlChars(obj.category)).slice(0, 40) : '';
+    if (category) item.category = category;
+
+    out.push(item);
+  }
+  return out;
 }
 
 export async function GET(req: Request) {
@@ -93,13 +143,25 @@ export async function POST(req: Request) {
         return new NextResponse("Database not configured", { status: 500 });
     }
 
-    const body = await req.json();
+    if (isBodyTooLarge(req, 200_000)) {
+      return new NextResponse('Payload too large', { status: 413 });
+    }
 
-    const householdId = typeof body?.householdId === 'string' ? body.householdId : '';
-    const name = normalizeMealName(body?.name) ?? '';
-    const fromGlobalMealId = typeof body?.fromGlobalMealId === 'string' ? body.fromGlobalMealId : null;
-    const normalizedIngredients = normalizeIngredients(body?.ingredients);
-    const normalizedCuisine = normalizeCuisine(body?.cuisine);
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object') {
+      return new NextResponse('Invalid JSON body', { status: 400 });
+    }
+
+    const householdId = validateUuid((body as any)?.householdId) ?? '';
+    const nameBase = validateMealName((body as any)?.name);
+    const name = nameBase ? normalizeMealName(nameBase) ?? nameBase : '';
+    const fromGlobalMealId = validateUuid((body as any)?.fromGlobalMealId);
+    const normalizedIngredients = sanitizeIngredients(normalizeIngredients((body as any)?.ingredients));
+    const normalizedCuisineRaw =
+      typeof (body as any)?.cuisine === 'string'
+        ? normalizeWhitespace(stripControlChars((body as any).cuisine)).slice(0, 60)
+        : '';
+    const normalizedCuisine = normalizedCuisineRaw ? normalizeCuisine(normalizedCuisineRaw) ?? normalizedCuisineRaw : undefined;
 
     if (!householdId || !name) {
       return new NextResponse("Missing required fields", { status: 400 });
@@ -155,20 +217,29 @@ export async function POST(req: Request) {
       }
     }
     
-    const id = typeof body?.id === 'string' ? body.id : uuidv4();
+    const id = validateUuid((body as any)?.id) ?? uuidv4();
+
+    const description = validateMealDescription((body as any)?.description);
+    const userNotesRaw = typeof (body as any)?.userNotes === 'string' ? stripControlChars((body as any).userNotes).trim() : '';
+    const userNotes = userNotesRaw ? userNotesRaw.slice(0, 2000) : undefined;
+    const imageRaw = typeof (body as any)?.image === 'string' ? stripControlChars((body as any).image).trim() : '';
+    const image = imageRaw ? imageRaw.slice(0, 2048) : undefined;
+    const ratingRaw = (body as any)?.rating;
+    const rating = typeof ratingRaw === 'number' && Number.isFinite(ratingRaw) ? Math.max(0, Math.min(5, ratingRaw)) : undefined;
+    const instructions = sanitizeStringArray((body as any)?.instructions, { maxItems: MAX_INSTRUCTIONS, maxItemLength: 400 });
 
     const newMeal: typeof meals.$inferInsert = {
       id,
       householdId,
       name,
-      description: typeof body?.description === 'string' ? body.description : undefined,
-      ingredients: Array.isArray(normalizedIngredients) ? normalizedIngredients : [],
-      instructions: Array.isArray(body?.instructions) ? body.instructions : [],
+      description,
+      ingredients: normalizedIngredients,
+      instructions,
       fromGlobalMealId,
-      rating: typeof body?.rating === 'number' ? body.rating : undefined,
-      isFavorite: typeof body?.isFavorite === 'boolean' ? body.isFavorite : undefined,
-      userNotes: typeof body?.userNotes === 'string' ? body.userNotes : undefined,
-      image: typeof body?.image === 'string' ? body.image : undefined,
+      rating,
+      isFavorite: typeof (body as any)?.isFavorite === 'boolean' ? (body as any).isFavorite : undefined,
+      userNotes,
+      image,
       cuisine: normalizedCuisine,
       createdBy: userId, // Enforce creator
       createdAt: new Date(),
@@ -182,7 +253,9 @@ export async function POST(req: Request) {
       console.error('[MEALS_POST_INGREDIENT_USAGE]', error);
     }
 
-    return NextResponse.json(newMeal);
+    const res = NextResponse.json(newMeal);
+    res.headers.set('cache-control', 'no-store');
+    return res;
 
   } catch (error) {
     console.error('[MEALS_POST]', error);

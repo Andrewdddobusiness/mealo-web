@@ -11,7 +11,7 @@ import {
 } from '@/lib/ai/generateMeal';
 import { importMealFromVideo, validateImportVideoMealInput } from '@/lib/ai/importVideoMeal';
 import { requireProSubscriptionForAi, SubscriptionRequiredError } from '@/lib/ai/requireProSubscription';
-import { AiUsageLimitError, consumeAiUsage } from '@/lib/ai/aiUsage';
+import { AiCreditsLimitError, AiUsageLimitError, consumeAiCredits, consumeAiUsage } from '@/lib/ai/aiUsage';
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 6;
@@ -102,6 +102,7 @@ export async function POST(req: Request) {
       );
     }
 
+    await consumeAiCredits(db, userId, 'ai_import_video_meal');
     await consumeAiUsage(db, userId, 'ai_import_video_meal');
 
     const result = await importMealFromVideo(sanitizedInput, { requestId });
@@ -153,6 +154,24 @@ export async function POST(req: Request) {
         requestId,
         {
           feature: error.feature,
+          period: error.period.key,
+          limit: error.limit,
+          used: error.used,
+          resetsAt: error.period.endsAt.toISOString(),
+        },
+      );
+      res.headers.set('retry-after', String(retryAfterSeconds));
+      return res;
+    }
+
+    if (error instanceof AiCreditsLimitError) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((error.period.endsAt.getTime() - Date.now()) / 1000));
+      const res = jsonError(
+        error.status,
+        error.code,
+        `Monthly AI credits limit reached. Try again after ${error.period.endsAt.toISOString()}.`,
+        requestId,
+        {
           period: error.period.key,
           limit: error.limit,
           used: error.used,

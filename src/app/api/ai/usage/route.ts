@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { db } from '@/db';
 import { subscriptions } from '@/db/schema';
-import { getAiUsageForPeriod, getCurrentAiUsagePeriod } from '@/lib/ai/aiUsage';
+import { getAiCreditCost, getAiCreditsForPeriod, getAiUsageForPeriod, getCurrentAiUsagePeriod } from '@/lib/ai/aiUsage';
 
 function jsonError(status: number, error: string, message: string, requestId: string) {
   const res = NextResponse.json({ error, message, requestId }, { status });
@@ -36,6 +36,7 @@ export async function GET(req: Request) {
       .limit(1);
 
     const features = await getAiUsageForPeriod(database, userId, period);
+    const credits = await getAiCreditsForPeriod(database, userId, period);
 
     const res = NextResponse.json(
       {
@@ -44,6 +45,12 @@ export async function GET(req: Request) {
           key: period.key,
           startsAt: period.startsAt.toISOString(),
           endsAt: period.endsAt.toISOString(),
+        },
+        credits,
+        creditCosts: {
+          ai_generate_meal: getAiCreditCost('ai_generate_meal'),
+          ai_scan_meal: getAiCreditCost('ai_scan_meal'),
+          ai_import_video_meal: getAiCreditCost('ai_import_video_meal'),
         },
         features,
       },
@@ -57,4 +64,3 @@ export async function GET(req: Request) {
     return jsonError(500, 'internal_error', 'Something went wrong fetching usage.', requestId);
   }
 }
-

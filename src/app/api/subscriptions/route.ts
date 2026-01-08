@@ -21,7 +21,15 @@ export async function GET(req: Request) {
         return NextResponse.json(null);
     }
 
-    return NextResponse.json(sub[0]);
+    const s = sub[0];
+    return NextResponse.json({
+      productId: s.productId,
+      expiresAt: s.expiresAt,
+      isTrial: s.isTrial,
+      isActive: s.isActive,
+      autoRenewStatus: s.autoRenewStatus,
+      updatedAt: s.updatedAt,
+    });
 
   } catch (error) {
     console.error('[SUBSCRIPTIONS_GET]', error);

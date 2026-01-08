@@ -4,6 +4,37 @@ import { db } from '../../../../db';
 import { invites, household_members, households } from '../../../../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
+import { isBodyTooLarge, validateInviteToken } from '@/lib/validation';
+
+const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+const RATE_LIMIT_MAX_PER_IP = 30;
+const RATE_LIMIT_MAX_PER_USER = 10;
+const rateLimitByIp = new Map<string, { resetAtMs: number; count: number }>();
+const rateLimitByUser = new Map<string, { resetAtMs: number; count: number }>();
+
+function getClientIp(req: Request): string {
+  const xff = req.headers.get('x-forwarded-for');
+  if (xff) return xff.split(',')[0]?.trim() || 'unknown';
+  const realIp = req.headers.get('x-real-ip');
+  if (realIp) return realIp.trim();
+  return 'unknown';
+}
+
+function checkRateLimit(map: Map<string, { resetAtMs: number; count: number }>, key: string, max: number) {
+  const nowMs = Date.now();
+  const existing = map.get(key);
+  if (!existing || existing.resetAtMs <= nowMs) {
+    map.set(key, { resetAtMs: nowMs + RATE_LIMIT_WINDOW_MS, count: 1 });
+    return { allowed: true as const };
+  }
+  if (existing.count >= max) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((existing.resetAtMs - nowMs) / 1000));
+    return { allowed: false as const, retryAfterSeconds };
+  }
+  existing.count += 1;
+  map.set(key, existing);
+  return { allowed: true as const };
+}
 
 export async function POST(req: Request) {
   try {
@@ -12,15 +43,33 @@ export async function POST(req: Request) {
       return new NextResponse("Unauthorized", { status: 401 });
     }
 
+    const ip = getClientIp(req);
+    const ipLimit = checkRateLimit(rateLimitByIp, ip, RATE_LIMIT_MAX_PER_IP);
+    if (!ipLimit.allowed) {
+      const res = new NextResponse('Too many requests. Please try again later.', { status: 429 });
+      res.headers.set('retry-after', String(ipLimit.retryAfterSeconds));
+      return res;
+    }
+
+    const userLimit = checkRateLimit(rateLimitByUser, userId, RATE_LIMIT_MAX_PER_USER);
+    if (!userLimit.allowed) {
+      const res = new NextResponse('Too many requests. Please try again later.', { status: 429 });
+      res.headers.set('retry-after', String(userLimit.retryAfterSeconds));
+      return res;
+    }
+
     if (!db) {
         return new NextResponse("Database not configured", { status: 500 });
     }
 
-    const body = await req.json();
-    const { token } = body;
+    if (isBodyTooLarge(req, 10_000)) {
+      return new NextResponse('Payload too large', { status: 413 });
+    }
 
+    const body = await req.json().catch(() => null);
+    const token = validateInviteToken((body as any)?.token);
     if (!token) {
-        return new NextResponse("Token is required", { status: 400 });
+      return new NextResponse('Invalid token', { status: 400 });
     }
 
     // 1. Find invite
@@ -69,7 +118,9 @@ export async function POST(req: Request) {
         await db.update(invites).set({ usesLeft: inv.usesLeft - 1 }).where(eq(invites.id, inv.id));
     }
 
-    return NextResponse.json({ success: true, householdId: inv.householdId });
+    const res = NextResponse.json({ success: true, householdId: inv.householdId });
+    res.headers.set('cache-control', 'no-store');
+    return res;
 
   } catch (error) {
     console.error('[INVITES_REDEEM_POST]', error);
