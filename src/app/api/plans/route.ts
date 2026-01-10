@@ -4,7 +4,7 @@ import { db } from '../../../db';
 import { plans, household_members } from '../../../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
-import { isBodyTooLarge, validatePlanDate, validateUuid } from '@/lib/validation';
+import { isBodyTooLarge, validatePlanDate, validateRecordId, validateUuid } from '@/lib/validation';
 
 export async function POST(req: Request) {
   try {
@@ -23,7 +23,7 @@ export async function POST(req: Request) {
 
     const body = await req.json().catch(() => null);
     const householdId = validateUuid((body as any)?.householdId);
-    const mealId = validateUuid((body as any)?.mealId);
+    const mealId = validateRecordId((body as any)?.mealId);
     const date = validatePlanDate((body as any)?.date);
     const isCompleted = (body as any)?.isCompleted;
 

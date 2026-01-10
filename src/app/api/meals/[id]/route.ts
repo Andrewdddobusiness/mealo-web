@@ -8,7 +8,7 @@ import {
   sanitizeStringArray,
   stripControlChars,
   validateMealName,
-  validateUuid,
+  validateRecordId,
 } from '@/lib/validation';
 import { db } from '../../../../db';
 import { meals, household_members } from '../../../../db/schema';
@@ -67,7 +67,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
 
     const { id: idRaw } = await params;
-    const id = validateUuid(idRaw);
+    const id = validateRecordId(idRaw);
     if (!id) {
       return new NextResponse("Invalid id", { status: 400 });
     }

@@ -18,6 +18,21 @@ export function validateUuid(value: unknown): string | null {
   return isUuid(trimmed) ? trimmed : null;
 }
 
+export const LEGACY_ID_MAX_LENGTH = 128;
+export function validateLegacyId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > LEGACY_ID_MAX_LENGTH) return null;
+  // Allow opaque-but-safe IDs (legacy mobile used "meal-<timestamp>-<rand>").
+  if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+export function validateRecordId(value: unknown): string | null {
+  return validateUuid(value) ?? validateLegacyId(value);
+}
+
 export const HOUSEHOLD_NAME_MAX_LENGTH = 30;
 export function validateHouseholdName(value: unknown): string | null {
   if (typeof value !== 'string') return null;
