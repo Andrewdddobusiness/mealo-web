@@ -1000,7 +1000,7 @@ async function resolveVideoFromUrlWithDebug(
     const htmlBytes = await readBodyToBufferWithLimit(first, MAX_HTML_BYTES, 'Page content');
     const html = htmlBytes.toString('utf8');
     const extractedFrom: ExtractedFrom[] = [];
-    let extracted = extractVideoUrlFromHtml(html, first.url);
+    const extracted = extractVideoUrlFromHtml(html, first.url);
 
     debug?.('html.fetched', {
       finalUrl: sanitizeUrlForLog(first.url),

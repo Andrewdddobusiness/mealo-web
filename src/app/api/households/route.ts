@@ -19,12 +19,15 @@ export async function GET(req: Request) {
     }
     const database = db;
 
-    // 1) Resolve household ids (member OR owner) in one round trip.
-    // We keep the owner fallback for legacy data where household_members might be missing.
+    // 1) Resolve household ids in one round trip.
+    //
+    // IMPORTANT: only households the user is currently a member of should be returned.
+    // Using an owner_id fallback causes a "left" household to reappear for the former owner,
+    // which breaks the leave-group UX (especially for 1-member groups).
     const idResult = await database.execute(sql`
-      SELECT household_id AS id FROM household_members WHERE user_id = ${userId}
-      UNION
-      SELECT id FROM households WHERE owner_id = ${userId}
+      SELECT household_id AS id
+      FROM household_members
+      WHERE user_id = ${userId}
     `);
     const allIds = Array.from(
       new Set(

@@ -91,7 +91,7 @@ export async function GET(req: Request) {
         return new NextResponse("Database not configured", { status: 500 });
     }
 
-    // Fetch all meals in households the user belongs to (member OR owner), in one round trip.
+    // Fetch all meals in households the user belongs to, in one round trip.
     // Note: We alias snake_case DB columns to the camelCase shape used by the mobile app.
     const mealsResult = await db.execute(sql`
       SELECT
@@ -111,9 +111,9 @@ export async function GET(req: Request) {
         m.created_at AS "createdAt"
       FROM meals m
       WHERE m.household_id IN (
-        SELECT household_id FROM household_members WHERE user_id = ${userId}
-        UNION
-        SELECT id FROM households WHERE owner_id = ${userId}
+        SELECT household_id
+        FROM household_members
+        WHERE user_id = ${userId}
       );
     `);
 

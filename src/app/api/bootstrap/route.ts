@@ -26,10 +26,14 @@ export async function GET(req: Request) {
     const includeGlobalMeals = parseBoolean(searchParams.get('includeGlobalMeals'));
 
     // Resolve household ids once and reuse across payload sections.
+    //
+    // IMPORTANT: only households the user is currently a member of should be returned.
+    // Using an owner_id fallback causes a "left" household to reappear for the former owner,
+    // which breaks the leave-group UX (especially for 1-member groups).
     const idResult = await database.execute(sql`
-      SELECT household_id AS id FROM household_members WHERE user_id = ${userId}
-      UNION
-      SELECT id FROM households WHERE owner_id = ${userId}
+      SELECT household_id AS id
+      FROM household_members
+      WHERE user_id = ${userId}
     `);
     const householdIds = Array.from(
       new Set(
