@@ -11,7 +11,7 @@ import {
   validateRecordId,
 } from '@/lib/validation';
 import { db } from '../../../../db';
-import { meals, household_members } from '../../../../db/schema';
+import { meals, household_members, plans } from '../../../../db/schema';
 import { eq, and } from 'drizzle-orm';
 
 const MAX_INGREDIENTS = 100;
@@ -195,5 +195,58 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   } catch (error) {
     console.error('[MEAL_PUT]', error);
     return new NextResponse("Internal Error", { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const userId = await getUserIdFromRequest(req);
+    if (!userId) {
+      return new NextResponse('Unauthorized', { status: 401 });
+    }
+
+    if (!db) {
+      return new NextResponse('Database not configured', { status: 500 });
+    }
+
+    const { id: idRaw } = await params;
+    const id = validateRecordId(idRaw);
+    if (!id) {
+      return new NextResponse('Invalid id', { status: 400 });
+    }
+
+    const mealRows = await db.select().from(meals).where(eq(meals.id, id)).limit(1);
+    if (mealRows.length === 0) {
+      return new NextResponse('Meal not found', { status: 404 });
+    }
+
+    const meal = mealRows[0];
+    const householdId = meal.householdId;
+
+    const membershipRows = await db
+      .select()
+      .from(household_members)
+      .where(and(eq(household_members.householdId, householdId), eq(household_members.userId, userId)));
+
+    if (membershipRows.length === 0) {
+      return new NextResponse('You are not a member of this household', { status: 403 });
+    }
+
+    const role = membershipRows[0].role;
+    const canDelete = role === 'owner' || meal.createdBy === userId;
+    if (!canDelete) {
+      return new NextResponse('Only the recipe creator or household owner can delete this meal', { status: 403 });
+    }
+
+    // Plans reference meals via a FK. Delete dependent plans first.
+    await db.delete(plans).where(eq(plans.mealId, id));
+    await db.delete(meals).where(eq(meals.id, id));
+
+    const res = NextResponse.json({ success: true });
+    res.headers.set('cache-control', 'no-store');
+    return res;
+  } catch (error) {
+    console.error('[MEAL_DELETE]', error);
+    return new NextResponse('Internal Error', { status: 500 });
   }
 }
