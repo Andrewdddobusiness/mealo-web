@@ -4,6 +4,8 @@ import type { NeonHttpDatabase } from 'drizzle-orm/neon-http';
 
 import * as schema from '@/db/schema';
 import type { AiFeature } from '@/lib/ai/requireProSubscription';
+import { subscriptions } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 
 type DbClient = NeonHttpDatabase<typeof schema>;
 
@@ -14,6 +16,8 @@ export type AiUsagePeriod = {
   startsAt: Date;
   endsAt: Date;
 };
+
+export type AiUsageTier = 'free' | 'trial' | 'pro';
 
 export class AiUsageLimitError extends Error {
   readonly name = 'AiUsageLimitError';
@@ -69,6 +73,36 @@ export function getCurrentAiUsagePeriod(now: Date = new Date()): AiUsagePeriod {
   return { key, startsAt, endsAt };
 }
 
+function resolveSubscriptionTier(sub: typeof subscriptions.$inferSelect | undefined, now: Date): AiUsageTier {
+  if (!sub) return 'free';
+  const expiresAt = sub.expiresAt instanceof Date ? sub.expiresAt : new Date(sub.expiresAt as any);
+  const isActive = Boolean(sub.isActive) && expiresAt > now;
+  if (!isActive) return 'free';
+  return sub.isTrial ? 'trial' : 'pro';
+}
+
+export function getAiUsagePeriodForSubscription(
+  input: { subscription?: typeof subscriptions.$inferSelect; now?: Date },
+): AiUsagePeriod {
+  const now = input.now ?? new Date();
+  const tier = resolveSubscriptionTier(input.subscription, now);
+  if (tier === 'free') return getCurrentAiUsagePeriod(now);
+
+  const sub = input.subscription;
+  if (!sub) return getCurrentAiUsagePeriod(now);
+
+  const startsAtRaw = sub.currentPeriodStart;
+  const startsAt = startsAtRaw instanceof Date ? startsAtRaw : startsAtRaw ? new Date(startsAtRaw as any) : null;
+  const endsAt = sub.expiresAt instanceof Date ? sub.expiresAt : new Date(sub.expiresAt as any);
+
+  // If we don't have a reliable billing period start, fall back to calendar month.
+  if (!startsAt || !(startsAt < endsAt)) return getCurrentAiUsagePeriod(now);
+
+  // Keyed to billing period start so usage resets at trial→paid and each renewal.
+  const key = `billing:${startsAt.getTime()}`;
+  return { key, startsAt, endsAt };
+}
+
 export function getMonthlyAiLimit(feature: AiFeature): number {
   if (feature === 'ai_scan_meal') {
     return parseNonNegativeInt(process.env.AI_SCAN_MEAL_MONTHLY_LIMIT, 30);
@@ -77,6 +111,20 @@ export function getMonthlyAiLimit(feature: AiFeature): number {
     return parseNonNegativeInt(process.env.AI_IMPORT_VIDEO_MEAL_MONTHLY_LIMIT, 20);
   }
   return parseNonNegativeInt(process.env.AI_GENERATE_MEAL_MONTHLY_LIMIT, 60);
+}
+
+export function getTrialAiLimit(feature: AiFeature): number {
+  if (feature === 'ai_scan_meal') {
+    return parseNonNegativeInt(process.env.AI_TRIAL_SCAN_MEAL_LIMIT, 10);
+  }
+  if (feature === 'ai_import_video_meal') {
+    return parseNonNegativeInt(process.env.AI_TRIAL_IMPORT_VIDEO_MEAL_LIMIT, 0);
+  }
+  return parseNonNegativeInt(process.env.AI_TRIAL_GENERATE_MEAL_LIMIT, 5);
+}
+
+export function getAiLimitForTier(feature: AiFeature, tier: AiUsageTier): number {
+  return tier === 'trial' ? getTrialAiLimit(feature) : getMonthlyAiLimit(feature);
 }
 
 export function getAiCreditCost(feature: AiFeature): number {
@@ -100,6 +148,15 @@ export function getMonthlyAiCreditsLimit(): number {
   );
 }
 
+export function getAiCreditsLimitForTier(tier: AiUsageTier): number {
+  if (tier !== 'trial') return getMonthlyAiCreditsLimit();
+  return (
+    getTrialAiLimit('ai_generate_meal') * getAiCreditCost('ai_generate_meal') +
+    getTrialAiLimit('ai_scan_meal') * getAiCreditCost('ai_scan_meal') +
+    getTrialAiLimit('ai_import_video_meal') * getAiCreditCost('ai_import_video_meal')
+  );
+}
+
 function coerceUsed(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   const n = Number(value);
@@ -112,8 +169,11 @@ export async function consumeAiUsage(
   feature: AiFeature,
   opts?: { now?: Date },
 ): Promise<{ used: number; limit: number; period: AiUsagePeriod }> {
-  const period = getCurrentAiUsagePeriod(opts?.now);
-  const limit = getMonthlyAiLimit(feature);
+  const now = opts?.now ?? new Date();
+  const [subscription] = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).limit(1);
+  const tier = resolveSubscriptionTier(subscription, now);
+  const period = getAiUsagePeriodForSubscription({ subscription, now });
+  const limit = getAiLimitForTier(feature, tier);
 
   if (limit <= 0) {
     throw new AiUsageLimitError({ feature, limit, used: 0, period });
@@ -154,8 +214,11 @@ export async function consumeAiCredits(
   feature: AiFeature,
   opts?: { now?: Date },
 ): Promise<{ used: number; limit: number; period: AiUsagePeriod }> {
-  const period = getCurrentAiUsagePeriod(opts?.now);
-  const limit = getMonthlyAiCreditsLimit();
+  const now = opts?.now ?? new Date();
+  const [subscription] = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).limit(1);
+  const tier = resolveSubscriptionTier(subscription, now);
+  const period = getAiUsagePeriodForSubscription({ subscription, now });
+  const limit = getAiCreditsLimitForTier(tier);
   const cost = getAiCreditCost(feature);
 
   if (cost <= 0) {
@@ -203,6 +266,7 @@ export async function getAiUsageForPeriod(
   db: DbClient,
   userId: string,
   period: AiUsagePeriod,
+  opts?: { tier?: AiUsageTier },
 ): Promise<Record<AiFeature, { used: number; limit: number; remaining: number }>> {
   const rows = await db.execute(sql`
     SELECT feature, used
@@ -219,9 +283,10 @@ export async function getAiUsageForPeriod(
     usageByFeature.set(feature, used);
   }
 
-  const scanLimit = getMonthlyAiLimit('ai_scan_meal');
-  const generateLimit = getMonthlyAiLimit('ai_generate_meal');
-  const importVideoLimit = getMonthlyAiLimit('ai_import_video_meal');
+  const tier = opts?.tier ?? 'pro';
+  const scanLimit = getAiLimitForTier('ai_scan_meal', tier);
+  const generateLimit = getAiLimitForTier('ai_generate_meal', tier);
+  const importVideoLimit = getAiLimitForTier('ai_import_video_meal', tier);
 
   const scanUsed = usageByFeature.get('ai_scan_meal') ?? 0;
   const generateUsed = usageByFeature.get('ai_generate_meal') ?? 0;
@@ -250,8 +315,9 @@ export async function getAiCreditsForPeriod(
   db: DbClient,
   userId: string,
   period: AiUsagePeriod,
+  opts?: { tier?: AiUsageTier },
 ): Promise<{ used: number; limit: number; remaining: number }> {
-  const limit = getMonthlyAiCreditsLimit();
+  const limit = getAiCreditsLimitForTier(opts?.tier ?? 'pro');
 
   const row = await db.execute(sql`
     SELECT used

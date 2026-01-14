@@ -138,6 +138,7 @@ export async function POST(request: Request) {
       }
 
       let googleStatus: {
+        currentPeriodStart: Date | null;
         expiresAt: Date;
         isTrial: boolean;
         isActive: boolean;
@@ -166,6 +167,7 @@ export async function POST(request: Request) {
           userId,
           originalTransactionId,
           productId: requestedProductId,
+          currentPeriodStart: googleStatus.currentPeriodStart,
           expiresAt: googleStatus.expiresAt,
           isTrial: googleStatus.isTrial,
           isActive: googleStatus.isActive,
@@ -177,6 +179,7 @@ export async function POST(request: Request) {
           set: {
             originalTransactionId,
             productId: requestedProductId,
+            currentPeriodStart: googleStatus.currentPeriodStart,
             expiresAt: googleStatus.expiresAt,
             isTrial: googleStatus.isTrial,
             isActive: googleStatus.isActive,
@@ -270,6 +273,8 @@ export async function POST(request: Request) {
 
     const expiresDateMs = parseInt(latestReceiptInfo.expires_date_ms, 10);
     const expiresAt = new Date(expiresDateMs);
+    const purchaseDateMs = Number.parseInt(String(latestReceiptInfo.purchase_date_ms ?? ''), 10);
+    const currentPeriodStart = Number.isFinite(purchaseDateMs) && purchaseDateMs > 0 ? new Date(purchaseDateMs) : null;
     const productId = latestReceiptInfo.product_id;
     const originalTransactionId = latestReceiptInfo.original_transaction_id;
     // Trial / introductory offer detection (Apple returns strings "true"/"false").
@@ -288,6 +293,7 @@ export async function POST(request: Request) {
       userId: mask(userId),
       env: validationEnv,
       productId,
+      currentPeriodStart: currentPeriodStart ? currentPeriodStart.toISOString() : 'n/a',
       expiresAt: expiresAt.toISOString(),
       isTrial,
       isActive,
@@ -311,6 +317,7 @@ export async function POST(request: Request) {
           userId,
           originalTransactionId,
           productId,
+          currentPeriodStart,
           expiresAt,
           isTrial,
           isActive,
@@ -322,6 +329,7 @@ export async function POST(request: Request) {
           set: {
             originalTransactionId,
             productId,
+            currentPeriodStart,
             expiresAt,
             isTrial,
             isActive,
@@ -340,6 +348,7 @@ export async function POST(request: Request) {
         success: true,
         subscription: {
           productId,
+          currentPeriodStart,
           expiresAt,
           isTrial,
           isActive,

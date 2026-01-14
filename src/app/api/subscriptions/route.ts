@@ -24,6 +24,7 @@ export async function GET(req: Request) {
     const s = sub[0];
     return NextResponse.json({
       productId: s.productId,
+      currentPeriodStart: s.currentPeriodStart,
       expiresAt: s.expiresAt,
       isTrial: s.isTrial,
       isActive: s.isActive,

@@ -110,6 +110,7 @@ export const subscriptions = pgTable('subscriptions', {
   userId: text('user_id').references(() => users.id).primaryKey(),
   originalTransactionId: text('original_transaction_id').notNull(),
   productId: text('product_id').notNull(),
+  currentPeriodStart: timestamp('current_period_start'),
   expiresAt: timestamp('expires_at').notNull(),
   isTrial: boolean('is_trial').default(false),
   isActive: boolean('is_active').default(true),

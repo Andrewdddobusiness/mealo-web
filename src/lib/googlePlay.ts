@@ -124,6 +124,7 @@ async function getAccessToken(): Promise<string> {
 }
 
 export type GooglePlaySubscriptionStatus = {
+  currentPeriodStart: Date | null;
   expiresAt: Date;
   isTrial: boolean;
   isActive: boolean;
@@ -187,6 +188,13 @@ export async function validateGooglePlaySubscription(opts: {
 
   const expiresAt = new Date(expiryMs);
 
+  const startTimeMillisRaw = json?.startTimeMillis;
+  const startMs =
+    typeof startTimeMillisRaw === 'string' || typeof startTimeMillisRaw === 'number'
+      ? Number(startTimeMillisRaw)
+      : NaN;
+  const currentPeriodStart = Number.isFinite(startMs) && startMs > 0 ? new Date(startMs) : null;
+
   const paymentStateRaw = json?.paymentState;
   const paymentState =
     typeof paymentStateRaw === 'number' || typeof paymentStateRaw === 'string'
@@ -199,10 +207,10 @@ export async function validateGooglePlaySubscription(opts: {
   const isActive = expiresAt > now && (!hasPaymentState || paymentState !== 0);
 
   return {
+    currentPeriodStart,
     expiresAt,
     isTrial,
     isActive,
     autoRenewStatus: Boolean(json?.autoRenewing),
   };
 }
-

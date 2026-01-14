@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { db } from '@/db';
 import { subscriptions } from '@/db/schema';
-import { getAiCreditCost, getAiCreditsForPeriod, getAiUsageForPeriod, getCurrentAiUsagePeriod } from '@/lib/ai/aiUsage';
+import { getAiCreditCost, getAiCreditsForPeriod, getAiUsageForPeriod, getAiUsagePeriodForSubscription } from '@/lib/ai/aiUsage';
 
 function jsonError(status: number, error: string, message: string, requestId: string) {
   const res = NextResponse.json({ error, message, requestId }, { status });
@@ -28,19 +28,24 @@ export async function GET(req: Request) {
     }
     const database = db;
 
-    const period = getCurrentAiUsagePeriod();
     const [subscription] = await database
       .select()
       .from(subscriptions)
       .where(eq(subscriptions.userId, userId))
       .limit(1);
 
-    const features = await getAiUsageForPeriod(database, userId, period);
-    const credits = await getAiCreditsForPeriod(database, userId, period);
+    const now = new Date();
+    const subscriptionExpiresAt = subscription?.expiresAt instanceof Date ? subscription.expiresAt : null;
+    const isActive = Boolean(subscription?.isActive) && Boolean(subscriptionExpiresAt && subscriptionExpiresAt > now);
+    const tier = isActive ? (subscription?.isTrial ? 'trial' : 'pro') : 'free';
+    const period = getAiUsagePeriodForSubscription({ subscription, now });
+
+    const features = await getAiUsageForPeriod(database, userId, period, { tier });
+    const credits = await getAiCreditsForPeriod(database, userId, period, { tier });
 
     const res = NextResponse.json(
       {
-        isPro: Boolean(subscription?.isActive),
+        isPro: isActive,
         period: {
           key: period.key,
           startsAt: period.startsAt.toISOString(),

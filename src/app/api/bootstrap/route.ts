@@ -135,6 +135,7 @@ export async function GET(req: Request) {
       subscription: subscriptionRows[0]
         ? {
             productId: subscriptionRows[0].productId,
+            currentPeriodStart: subscriptionRows[0].currentPeriodStart,
             expiresAt: subscriptionRows[0].expiresAt,
             isTrial: subscriptionRows[0].isTrial,
             isActive: subscriptionRows[0].isActive,
