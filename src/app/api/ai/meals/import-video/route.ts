@@ -123,6 +123,7 @@ export async function POST(req: Request) {
     if (error instanceof AiValidationError) {
       // Validation errors here are typically URL issues or inaccessible videos.
       const trace = (error as any)?.aiImportVideoTrace;
+      const reason = (error as any)?.aiImportVideoReason;
       const payload = {
         requestId,
         userId: userIdForLog,
@@ -131,7 +132,13 @@ export async function POST(req: Request) {
         trace: Array.isArray(trace) ? trace.slice(-40) : undefined,
       };
       console.warn('[AI_IMPORT_VIDEO_FAIL]', JSON.stringify(payload));
-      return jsonError(400, 'invalid_request', error.message, requestId);
+
+      const publicMessage =
+        reason === 'no_recipes'
+          ? 'We couldn’t find a recipe in that link.'
+          : 'We couldn’t process that link right now. Please try again later.';
+
+      return jsonError(400, 'invalid_request', publicMessage, requestId);
     }
 
     if (error instanceof AiConfigError) {

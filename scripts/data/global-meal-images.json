@@ -1,0 +1,65 @@
+{
+  "baseUrl": "https://www.mealo.website/global-meals",
+  "items": [
+    {
+      "name": "Chicken Caesar Salad",
+      "filename": "chicken_caesar_salad.png",
+      "prompt": "A bright, appetizing close-up food photo of a chicken caesar salad in a bowl, crisp romaine, grilled chicken, parmesan shavings, croutons, creamy caesar dressing, natural window light, high detail, no text, no watermark, square composition.",
+      "image": ""
+    },
+    {
+      "name": "Avocado Toast",
+      "filename": "avocado_toast.png",
+      "prompt": "A bright, appetizing close-up food photo of avocado toast on rustic bread with simple garnish, natural window light, high detail, no text, no watermark, square composition.",
+      "image": ""
+    },
+    {
+      "name": "Spaghetti Bolognese",
+      "filename": "spaghetti_bolognese.png",
+      "prompt": "A bright, appetizing close-up food photo of spaghetti bolognese on a plate, rich tomato meat sauce, parmesan, basil garnish, natural window light, high detail, no text, no watermark, square composition.",
+      "image": ""
+    },
+    {
+      "name": "Chicken Stir Fry",
+      "filename": "chicken_stir_fry.png",
+      "prompt": "A bright, appetizing close-up food photo of chicken stir fry with colorful vegetables (broccoli, capsicum, carrots) in a bowl, glossy sauce, natural window light, high detail, no text, no watermark, square composition.",
+      "image": ""
+    },
+    {
+      "name": "Beef Tacos",
+      "filename": "beef_tacos.png",
+      "prompt": "A bright, appetizing close-up food photo of beef tacos on a plate, visible tortilla shells, seasoned beef, fresh toppings (cilantro, onion, lime), natural window light, high detail, no text, no watermark, square composition.",
+      "image": ""
+    },
+    {
+      "name": "Veggie Omelette",
+      "filename": "veggie_omelette.png",
+      "prompt": "A bright, appetizing close-up food photo of a veggie omelette on a plate, visible eggs folded with vegetables, natural window light, high detail, no text, no watermark, square composition.",
+      "image": ""
+    },
+    {
+      "name": "Greek Salad",
+      "filename": "greek_salad.png",
+      "prompt": "A bright, appetizing close-up food photo of a greek salad in a bowl, cucumber, tomato, red onion, olives, feta, oregano, olive oil, natural window light, high detail, no text, no watermark, square composition.",
+      "image": ""
+    },
+    {
+      "name": "Butter Chicken",
+      "filename": "butter_chicken.png",
+      "prompt": "A bright, appetizing close-up food photo of butter chicken (murgh makhani) in a bowl with creamy orange curry sauce, optionally paired with basmati rice or naan, natural window light, high detail, no text, no watermark, square composition.",
+      "image": ""
+    },
+    {
+      "name": "Fried Rice",
+      "filename": "fried_rice.png",
+      "prompt": "A bright, appetizing close-up food photo of fried rice in a bowl, visible rice grains, vegetables, egg, optional protein, natural window light, high detail, no text, no watermark, square composition.",
+      "image": ""
+    },
+    {
+      "name": "Tuna Pasta",
+      "filename": "tuna_pasta.png",
+      "prompt": "A bright, appetizing close-up food photo of tuna pasta in a bowl or plate, visible pasta coated with sauce and tuna flakes, optional herbs/lemon, natural window light, high detail, no text, no watermark, square composition.",
+      "image": ""
+    }
+  ]
+}

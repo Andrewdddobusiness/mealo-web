@@ -104,8 +104,8 @@ function guessPlatform(url: string): ImportSource['platform'] {
   try {
     const parsed = new URL(url);
     const host = parsed.hostname.toLowerCase();
-    if (host.includes('tiktok.com')) return 'tiktok';
-    if (host.includes('instagram.com')) return 'instagram';
+    if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) return 'tiktok';
+    if (host === 'instagram.com' || host.endsWith('.instagram.com')) return 'instagram';
   } catch {
     // ignore
   }
@@ -1132,6 +1132,12 @@ async function resolveVideoFromUrlWithDebug(
         }
       }
 
+      if (platform === 'other') {
+        throw new AiValidationError(
+          'Could not find a downloadable video for that link. If this is a recipe webpage, paste the URL of the recipe page (with ingredients and steps).',
+        );
+      }
+
       throw new AiValidationError(
         'Could not find a downloadable video for that link. TikTok/Instagram may block access without an approved API.',
       );
@@ -1375,6 +1381,35 @@ export async function importMealFromVideo(
       record('recipes.validated', { count: recipes.length, names: recipes.map((r) => r.name).slice(0, 5) });
       return recipes;
     };
+
+    if (platform === 'other') {
+      const website = await fetchRecipeWebsiteSource(validated.url, record);
+      if (website) {
+        const websiteSource: ImportSource = {
+          mode: 'website',
+          platform,
+          sourceUrl: validated.url,
+          extractedFrom: website.extractedFrom,
+          caption: website.caption,
+        };
+
+        try {
+          const recipes = await runGemini(websiteSource);
+          return {
+            recipes,
+            meta: {
+              platform,
+              mode: websiteSource.mode,
+              extractedFrom: websiteSource.extractedFrom,
+              websiteUrl: website.finalUrl,
+            },
+          };
+        } catch (error) {
+          const reason = (error as any)?.aiImportVideoReason;
+          if (reason !== 'no_recipes') throw error;
+        }
+      }
+    }
 
     const tryBuildVideoSource = async (): Promise<Extract<ImportSource, { mode: 'video' }> | null> => {
       const resolver = await resolveVideoViaResolver(validated.url, platform, record);
