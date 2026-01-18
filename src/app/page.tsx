@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
 const storeLinks = {
-  ios: "https://apps.apple.com/app/id123456789",
+  ios: "https://apps.apple.com/au/app/mealo-meal-planner/id6756686048",
   android: "https://play.google.com/store/apps/details?id=com.mealo.app",
 };
 

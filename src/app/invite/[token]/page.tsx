@@ -22,7 +22,7 @@ export default async function InvitePage({ params }: Props) {
   const isIOS = /iPhone|iPad|iPod/i.test(ua);
 
   const appStoreUrl =
-    process.env.NEXT_PUBLIC_APP_STORE_URL ?? 'https://apps.apple.com/us/app/mealo/id123456789';
+    process.env.NEXT_PUBLIC_APP_STORE_URL ?? 'https://apps.apple.com/au/app/mealo-meal-planner/id6756686048';
   const playStoreUrl =
     process.env.NEXT_PUBLIC_PLAY_STORE_URL ??
     'https://play.google.com/store/apps/details?id=com.mealo.app';
