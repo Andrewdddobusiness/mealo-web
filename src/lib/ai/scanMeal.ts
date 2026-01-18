@@ -73,12 +73,16 @@ export async function scanMealFromImage(input: {
   )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   const systemInstruction = [
-    'You analyze a photo of a cooked meal for a meal planning app.',
+    'You analyze an image for a meal planning app.',
+    'The image may show: (a) a cooked meal, (b) meal ingredients, or (c) a recipe (text).',
     'Return ONLY valid JSON (no markdown, no code fences, no explanations).',
-    'The JSON MUST match exactly this shape:',
-    '{ "meal": { "name": string, "cuisines": string[]|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string, "category": string|null } ] } }',
+    'The JSON MUST be ONE of these shapes:',
+    '- { "meal": { "name": string, "cuisines": string[]|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string, "category": string|null } ] } }',
+    '- OR { "error": "not_food" }',
     'Rules:',
-    '- Make a best-effort guess from the image; if uncertain, choose a generic but plausible meal name.',
+    '- If the image is NOT food/ingredients/recipe (e.g. bottle, electronics, people, pets, household objects), return { "error": "not_food" }.',
+    '- If uncertain whether it is food/recipe, prefer { "error": "not_food" } rather than guessing.',
+    '- Otherwise, make a best-effort identification from the image.',
     `- ingredients must be 1..${maxIngredients} items`,
     '- Each ingredient.name must be a generic ingredient (no brand names).',
     '- Prefer including quantity + unit, but if unsure you may return null quantity.',
@@ -87,8 +91,8 @@ export async function scanMealFromImage(input: {
   ].join('\n');
 
   const userPrompt = [
-    'Identify the meal shown in the photo and list the main ingredients used to make it.',
-    'Do not include cooking instructions.',
+    'If the image contains a meal/ingredients/recipe, return the meal name and main ingredients.',
+    'If it does not look food-related, return { "error": "not_food" }.',
   ].join('\n');
 
   const res = await fetchWithTimeout(
@@ -126,5 +130,16 @@ export async function scanMealFromImage(input: {
 
   const text = extractTextFromGemini(json ?? {});
   const parsed = extractJsonObject(text);
+  const rootError =
+    parsed && typeof parsed === 'object'
+      ? ((parsed as any).error ?? (parsed as any).meal?.error ?? undefined)
+      : undefined;
+
+  if (typeof rootError === 'string' && rootError.trim().toLowerCase() === 'not_food') {
+    const error = new AiValidationError('No food found in that photo.');
+    (error as any).aiScanReason = 'not_food';
+    throw error;
+  }
+
   return validateGeneratedMeal(parsed, maxIngredients);
 }

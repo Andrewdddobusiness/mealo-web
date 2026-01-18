@@ -113,6 +113,11 @@ export async function POST(req: Request) {
     }
 
     if (error instanceof AiValidationError) {
+      const reason = (error as any)?.aiScanReason;
+      if (reason === 'not_food') {
+        return jsonError(422, 'not_food', 'We couldn’t find food in that photo. Try scanning a meal or recipe.', requestId);
+      }
+
       console.error('[AI_SCAN_MEAL_VALIDATION]', { requestId, message: error.message });
       return jsonError(502, 'invalid_ai_response', error.message, requestId);
     }
