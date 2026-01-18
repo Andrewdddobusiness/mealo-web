@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { ensureDbUser } from '@/lib/ensureDbUser';
+import { isBodyTooLarge, stripControlChars } from '@/lib/validation';
 import { db } from '../../../db';
 import { feedbackSubmissions } from '../../../db/schema';
 
@@ -12,6 +13,8 @@ type FeedbackType = 'feature' | 'bug';
 
 const FEEDBACK_SUBMISSION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const FEEDBACK_SUBMISSION_LIMIT = 5;
+const MAX_TITLE_LENGTH = 120;
+const MAX_DESCRIPTION_LENGTH = 4000;
 
 const FEEDBACK_ADMIN_USER_IDS = new Set(
   (process.env.FEEDBACK_ADMIN_USER_IDS ?? '')
@@ -152,6 +155,10 @@ export async function POST(req: Request) {
     }
     const database = db;
 
+    if (isBodyTooLarge(req, 25_000)) {
+      return new NextResponse('Payload too large', { status: 413 });
+    }
+
     if (!isFeedbackAdmin(userId)) {
       const since = new Date(Date.now() - FEEDBACK_SUBMISSION_WINDOW_MS);
       const usageResult = await database.execute(sql`
@@ -179,15 +186,15 @@ export async function POST(req: Request) {
     }
 
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-    const title = typeof body.title === 'string' ? body.title.trim() : '';
-    const description = typeof body.description === 'string' ? body.description.trim() : '';
+    const title = typeof body.title === 'string' ? stripControlChars(body.title).trim() : '';
+    const description = typeof body.description === 'string' ? stripControlChars(body.description).trim() : '';
     const type = body.type;
 
-    if (!title || title.length > 120) {
-      return new NextResponse('Title is required (max 120 chars)', { status: 400 });
+    if (!title || title.length > MAX_TITLE_LENGTH) {
+      return new NextResponse(`Title is required (max ${MAX_TITLE_LENGTH} chars)`, { status: 400 });
     }
-    if (!description || description.length > 4000) {
-      return new NextResponse('Description is required (max 4000 chars)', { status: 400 });
+    if (!description || description.length > MAX_DESCRIPTION_LENGTH) {
+      return new NextResponse(`Description is required (max ${MAX_DESCRIPTION_LENGTH} chars)`, { status: 400 });
     }
     if (!isFeedbackType(type)) {
       return new NextResponse('Invalid type', { status: 400 });

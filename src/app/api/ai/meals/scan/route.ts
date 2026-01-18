@@ -108,10 +108,12 @@ export async function POST(req: Request) {
     }
 
     if (error instanceof AiProviderError) {
+      console.error('[AI_SCAN_MEAL_PROVIDER]', { requestId, message: error.message });
       return jsonError(502, 'ai_provider_error', 'AI provider error. Please try again.', requestId);
     }
 
     if (error instanceof AiValidationError) {
+      console.error('[AI_SCAN_MEAL_VALIDATION]', { requestId, message: error.message });
       return jsonError(502, 'invalid_ai_response', error.message, requestId);
     }
 

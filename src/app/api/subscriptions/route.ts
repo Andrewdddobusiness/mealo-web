@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { db } from '../../../db';
-import { subscriptions } from '../../../db/schema';
+import { subscriptions, users } from '../../../db/schema';
 import { eq } from 'drizzle-orm';
 
 export async function GET(req: Request) {
@@ -15,21 +15,44 @@ export async function GET(req: Request) {
         return new NextResponse("Database not configured", { status: 500 });
     }
 
-    const sub = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).limit(1);
+    const [userRow, subRow] = await Promise.all([
+      db
+        .select({ proOverride: users.proOverride })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select()
+        .from(subscriptions)
+        .where(eq(subscriptions.userId, userId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    const hasProOverride = Boolean(userRow?.proOverride);
+    const now = new Date();
+    const subscriptionExpiresAt = subRow?.expiresAt instanceof Date ? subRow.expiresAt : null;
+    const subscriptionIsActive =
+      Boolean(subRow?.isActive) && Boolean(subscriptionExpiresAt && subscriptionExpiresAt > now);
     
-    if (sub.length === 0) {
-        return NextResponse.json(null);
+    if (!subRow && !hasProOverride) {
+      return NextResponse.json(null);
     }
 
-    const s = sub[0];
+    const effectiveIsActive = hasProOverride || subscriptionIsActive;
+    const effectiveIsTrial = !hasProOverride && subscriptionIsActive && Boolean(subRow?.isTrial);
+    const effectiveExpiresAt = subscriptionIsActive ? subscriptionExpiresAt : hasProOverride ? null : subscriptionExpiresAt;
+
     return NextResponse.json({
-      productId: s.productId,
-      currentPeriodStart: s.currentPeriodStart,
-      expiresAt: s.expiresAt,
-      isTrial: s.isTrial,
-      isActive: s.isActive,
-      autoRenewStatus: s.autoRenewStatus,
-      updatedAt: s.updatedAt,
+      productId: subRow?.productId ?? 'pro_override',
+      currentPeriodStart: subRow?.currentPeriodStart ?? null,
+      expiresAt: effectiveExpiresAt,
+      isTrial: effectiveIsTrial,
+      isActive: effectiveIsActive,
+      autoRenewStatus: Boolean(subRow?.autoRenewStatus),
+      updatedAt: subRow?.updatedAt ?? new Date(),
+      proOverride: hasProOverride,
     });
 
   } catch (error) {

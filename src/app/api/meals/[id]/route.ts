@@ -9,6 +9,7 @@ import {
   stripControlChars,
   validateMealName,
   validateRecordId,
+  validateUuid,
 } from '@/lib/validation';
 import { db } from '../../../../db';
 import { meals, household_members, plans } from '../../../../db/schema';
@@ -16,6 +17,18 @@ import { eq, and } from 'drizzle-orm';
 
 const MAX_INGREDIENTS = 100;
 const MAX_INSTRUCTIONS = 60;
+
+function sanitizeIngredientKey(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const normalized = stripControlChars(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_+/g, '_')
+    .slice(0, 80);
+  return normalized;
+}
 
 function sanitizeIngredients(input: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(input)) return [];
@@ -34,6 +47,12 @@ function sanitizeIngredients(input: unknown): Array<Record<string, unknown>> {
     if (!name) continue;
 
     const item: Record<string, unknown> = { name: normalizeMealName(name) ?? name };
+
+    const ingredientKey = sanitizeIngredientKey(obj.ingredientKey);
+    if (ingredientKey) item.ingredientKey = ingredientKey;
+
+    const ingredientCatalogId = validateUuid(obj.ingredientCatalogId) ?? '';
+    if (ingredientCatalogId) item.ingredientCatalogId = ingredientCatalogId;
 
     const quantity = obj.quantity;
     if (typeof quantity === 'number' && Number.isFinite(quantity)) {

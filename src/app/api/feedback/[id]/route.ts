@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { sql } from 'drizzle-orm';
 
 import { getUserIdFromRequest } from '@/lib/requestAuth';
+import { stripControlChars } from '@/lib/validation';
 import { db } from '../../../../db';
 
 const MAX_TITLE_LENGTH = 120;
@@ -21,10 +22,6 @@ const FEEDBACK_ADMIN_USER_IDS = new Set(
 
 function isFeedbackAdmin(userId: string): boolean {
   return FEEDBACK_ADMIN_USER_IDS.has(userId);
-}
-
-function stripControlChars(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
 }
 
 function sanitizeText(value: unknown): string {

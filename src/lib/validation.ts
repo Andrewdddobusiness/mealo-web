@@ -1,5 +1,7 @@
 export function stripControlChars(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
+  // Strip ASCII control chars plus bidirectional formatting characters that can be used for UI/log spoofing.
+  // See: https://trojansource.codes/ (Bidi controls) — we remove only the formatting marks, not any language characters.
+  return value.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
 }
 
 export function normalizeWhitespace(value: string): string {

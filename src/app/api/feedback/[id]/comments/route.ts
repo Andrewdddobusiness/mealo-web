@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { ensureDbUser } from '@/lib/ensureDbUser';
+import { isBodyTooLarge, stripControlChars } from '@/lib/validation';
 import { db } from '../../../../../db';
 
 const FEEDBACK_COMMENT_WINDOW_MS = 60 * 60 * 1000;
@@ -107,6 +108,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       return new NextResponse('Missing id', { status: 400 });
     }
 
+    if (isBodyTooLarge(req, 25_000)) {
+      return new NextResponse('Payload too large', { status: 413 });
+    }
+
     if (!isFeedbackAdmin(userId)) {
       const since = new Date(Date.now() - FEEDBACK_COMMENT_WINDOW_MS);
       const usageResult = await database.execute(sql`
@@ -134,7 +139,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
 
     const bodyJson = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-    const body = typeof bodyJson.body === 'string' ? bodyJson.body.trim() : '';
+    const body = typeof bodyJson.body === 'string' ? stripControlChars(bodyJson.body).trim() : '';
 
     if (!body || body.length > 2000) {
       return new NextResponse('Comment is required (max 2000 chars)', { status: 400 });

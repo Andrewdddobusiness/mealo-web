@@ -68,6 +68,7 @@ export async function GET(req: Request) {
           FROM candidates
         )
         SELECT
+          id,
           name,
           category,
           CASE WHEN created_by = ${userId} THEN true ELSE false END AS "isPersonal"
@@ -125,6 +126,7 @@ export async function GET(req: Request) {
         FROM candidates
       )
       SELECT
+        id,
         name,
         category,
         CASE WHEN created_by = ${userId} THEN true ELSE false END AS "isPersonal"

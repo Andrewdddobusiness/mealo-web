@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { db } from '@/db';
-import { subscriptions } from '@/db/schema';
+import { subscriptions, users } from '@/db/schema';
 import { getAiCreditCost, getAiCreditsForPeriod, getAiUsageForPeriod, getAiUsagePeriodForSubscription } from '@/lib/ai/aiUsage';
 
 function jsonError(status: number, error: string, message: string, requestId: string) {
@@ -28,16 +28,30 @@ export async function GET(req: Request) {
     }
     const database = db;
 
-    const [subscription] = await database
-      .select()
-      .from(subscriptions)
-      .where(eq(subscriptions.userId, userId))
-      .limit(1);
+    const [userRow, subscription] = await Promise.all([
+      database
+        .select({ proOverride: users.proOverride })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      database
+        .select()
+        .from(subscriptions)
+        .where(eq(subscriptions.userId, userId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    const hasProOverride = Boolean(userRow?.proOverride);
 
     const now = new Date();
     const subscriptionExpiresAt = subscription?.expiresAt instanceof Date ? subscription.expiresAt : null;
-    const isActive = Boolean(subscription?.isActive) && Boolean(subscriptionExpiresAt && subscriptionExpiresAt > now);
-    const tier = isActive ? (subscription?.isTrial ? 'trial' : 'pro') : 'free';
+    const subscriptionIsActive =
+      Boolean(subscription?.isActive) && Boolean(subscriptionExpiresAt && subscriptionExpiresAt > now);
+    const isActive = hasProOverride || subscriptionIsActive;
+    const tier =
+      isActive ? (!hasProOverride && subscriptionIsActive && subscription?.isTrial ? 'trial' : 'pro') : 'free';
     const period = getAiUsagePeriodForSubscription({ subscription, now });
 
     const features = await getAiUsageForPeriod(database, userId, period, { tier });
@@ -46,6 +60,7 @@ export async function GET(req: Request) {
     const res = NextResponse.json(
       {
         isPro: isActive,
+        tier,
         period: {
           key: period.key,
           startsAt: period.startsAt.toISOString(),

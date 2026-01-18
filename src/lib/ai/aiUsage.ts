@@ -4,7 +4,7 @@ import type { NeonHttpDatabase } from 'drizzle-orm/neon-http';
 
 import * as schema from '@/db/schema';
 import type { AiFeature } from '@/lib/ai/requireProSubscription';
-import { subscriptions } from '@/db/schema';
+import { subscriptions, users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 
 type DbClient = NeonHttpDatabase<typeof schema>;
@@ -73,7 +73,12 @@ export function getCurrentAiUsagePeriod(now: Date = new Date()): AiUsagePeriod {
   return { key, startsAt, endsAt };
 }
 
-function resolveSubscriptionTier(sub: typeof subscriptions.$inferSelect | undefined, now: Date): AiUsageTier {
+function resolveSubscriptionTier(
+  sub: typeof subscriptions.$inferSelect | undefined,
+  now: Date,
+  opts?: { proOverride?: boolean },
+): AiUsageTier {
+  if (opts?.proOverride) return 'pro';
   if (!sub) return 'free';
   const expiresAt = sub.expiresAt instanceof Date ? sub.expiresAt : new Date(sub.expiresAt as any);
   const isActive = Boolean(sub.isActive) && expiresAt > now;
@@ -170,8 +175,16 @@ export async function consumeAiUsage(
   opts?: { now?: Date },
 ): Promise<{ used: number; limit: number; period: AiUsagePeriod }> {
   const now = opts?.now ?? new Date();
-  const [subscription] = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).limit(1);
-  const tier = resolveSubscriptionTier(subscription, now);
+  const [userRow, subscription] = await Promise.all([
+    db
+      .select({ proOverride: users.proOverride })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
+      .then((rows) => rows[0]),
+    db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).limit(1).then((rows) => rows[0]),
+  ]);
+  const tier = resolveSubscriptionTier(subscription, now, { proOverride: Boolean(userRow?.proOverride) });
   const period = getAiUsagePeriodForSubscription({ subscription, now });
   const limit = getAiLimitForTier(feature, tier);
 
@@ -215,8 +228,16 @@ export async function consumeAiCredits(
   opts?: { now?: Date },
 ): Promise<{ used: number; limit: number; period: AiUsagePeriod }> {
   const now = opts?.now ?? new Date();
-  const [subscription] = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).limit(1);
-  const tier = resolveSubscriptionTier(subscription, now);
+  const [userRow, subscription] = await Promise.all([
+    db
+      .select({ proOverride: users.proOverride })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
+      .then((rows) => rows[0]),
+    db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).limit(1).then((rows) => rows[0]),
+  ]);
+  const tier = resolveSubscriptionTier(subscription, now, { proOverride: Boolean(userRow?.proOverride) });
   const period = getAiUsagePeriodForSubscription({ subscription, now });
   const limit = getAiCreditsLimitForTier(tier);
   const cost = getAiCreditCost(feature);

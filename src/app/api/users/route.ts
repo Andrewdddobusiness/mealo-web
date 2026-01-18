@@ -4,11 +4,13 @@ import { clerkClient } from "@clerk/nextjs/server";
 import { db } from "../../../db";
 import { users } from "../../../db/schema";
 import { eq } from "drizzle-orm";
+import { isBodyTooLarge, stripControlChars } from "@/lib/validation";
 
-function normalizeString(value: unknown): string | undefined {
+function normalizeString(value: unknown, maxLen: number): string | undefined {
   if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length ? trimmed : undefined;
+  const trimmed = stripControlChars(value).trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, maxLen);
 }
 
 export async function POST(req: Request) {
@@ -38,8 +40,12 @@ export async function POST(req: Request) {
       return new NextResponse("Database not configured", { status: 500 });
     }
 
+    if (isBodyTooLarge(req, 25_000)) {
+      return new NextResponse("Payload too large", { status: 413 });
+    }
+
     const body = (await req.json()) as Partial<typeof users.$inferInsert>;
-    const requestedId = normalizeString(body.id);
+    const requestedId = normalizeString(body.id, 128);
     const effectiveId = requestedId ?? userId;
 
     if (effectiveId !== userId) {
@@ -51,9 +57,9 @@ export async function POST(req: Request) {
       return new NextResponse("Forbidden", { status: 403 });
     }
 
-    let name = normalizeString(body.name);
-    let email = normalizeString(body.email);
-    let avatar = normalizeString(body.avatar);
+    let name = normalizeString(body.name, 120);
+    let email = normalizeString(body.email, 320);
+    let avatar = normalizeString(body.avatar, 2048);
 
     if (!name || !email) {
       const client = await clerkClient();
@@ -61,8 +67,8 @@ export async function POST(req: Request) {
 
       name =
         name ??
-        normalizeString(clerkUser.fullName) ??
-        normalizeString([clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(" ")) ??
+        normalizeString(clerkUser.fullName, 120) ??
+        normalizeString([clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(" "), 120) ??
         "User";
 
       const primaryEmail =
@@ -70,8 +76,8 @@ export async function POST(req: Request) {
         clerkUser.emailAddresses?.find((e) => e.id === clerkUser.primaryEmailAddressId)?.emailAddress ??
         clerkUser.emailAddresses?.[0]?.emailAddress;
 
-      email = email ?? normalizeString(primaryEmail);
-      avatar = avatar ?? normalizeString(clerkUser.imageUrl);
+      email = email ?? normalizeString(primaryEmail, 320);
+      avatar = avatar ?? normalizeString(clerkUser.imageUrl, 2048);
     }
 
     if (!email) {

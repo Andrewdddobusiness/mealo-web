@@ -130,19 +130,44 @@ export async function GET(req: Request) {
       isPredefined: true,
     }));
 
+    const user = userRows[0] ?? null;
+    const subscription = subscriptionRows[0] ?? null;
+    const hasProOverride = Boolean(user?.proOverride);
+    const now = new Date();
+    const subscriptionExpiresAt = subscription?.expiresAt instanceof Date ? subscription.expiresAt : null;
+    const subscriptionIsActive =
+      Boolean(subscription?.isActive) && Boolean(subscriptionExpiresAt && subscriptionExpiresAt > now);
+
+    const effectiveIsActive = hasProOverride || subscriptionIsActive;
+    const effectiveIsTrial = !hasProOverride && subscriptionIsActive && Boolean(subscription?.isTrial);
+    const effectiveExpiresAt =
+      subscriptionIsActive ? subscriptionExpiresAt : hasProOverride ? null : subscriptionExpiresAt;
+
     return NextResponse.json({
-      user: userRows[0] ?? null,
-      subscription: subscriptionRows[0]
+      user,
+      subscription: subscription
         ? {
-            productId: subscriptionRows[0].productId,
-            currentPeriodStart: subscriptionRows[0].currentPeriodStart,
-            expiresAt: subscriptionRows[0].expiresAt,
-            isTrial: subscriptionRows[0].isTrial,
-            isActive: subscriptionRows[0].isActive,
-            autoRenewStatus: subscriptionRows[0].autoRenewStatus,
-            updatedAt: subscriptionRows[0].updatedAt,
+            productId: subscription.productId,
+            currentPeriodStart: subscription.currentPeriodStart,
+            expiresAt: effectiveExpiresAt,
+            isTrial: effectiveIsTrial,
+            isActive: effectiveIsActive,
+            autoRenewStatus: Boolean(subscription.autoRenewStatus),
+            updatedAt: subscription.updatedAt,
+            proOverride: hasProOverride,
           }
-        : null,
+        : hasProOverride
+          ? {
+              productId: 'pro_override',
+              currentPeriodStart: null,
+              expiresAt: null,
+              isTrial: false,
+              isActive: true,
+              autoRenewStatus: false,
+              updatedAt: new Date(),
+              proOverride: true,
+            }
+          : null,
       households: householdsWithDetails,
       meals: formattedMeals,
       globalMeals: includeGlobalMeals ? formattedGlobalMeals : undefined,

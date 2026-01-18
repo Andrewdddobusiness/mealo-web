@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { db } from '@/db';
+import { isBodyTooLarge } from '@/lib/validation';
 import {
   AiConfigError,
   AiProviderError,
@@ -17,6 +18,7 @@ import { AiCreditsLimitError, AiUsageLimitError, consumeAiCredits, consumeAiUsag
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 10;
 const rateLimitByUser = new Map<string, { resetAtMs: number; count: number }>();
+const MAX_BODY_BYTES = 16_384;
 
 function jsonError(
   status: number,
@@ -42,6 +44,10 @@ export async function POST(req: Request) {
 
     if (!db) {
       return jsonError(500, 'server_misconfigured', 'Database is not configured.', requestId);
+    }
+
+    if (isBodyTooLarge(req, MAX_BODY_BYTES)) {
+      return jsonError(413, 'payload_too_large', 'Request body is too large.', requestId);
     }
 
     await requireProSubscriptionForAi(db, userId, 'ai_generate_meal');
