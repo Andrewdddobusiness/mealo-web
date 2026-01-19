@@ -1244,6 +1244,7 @@ function buildImportPrompt(source: ImportSource, maxIngredients: number, maxReci
       '- Analyze the provided cooking video (visuals + audio).',
       '- Extract 1 or more recipe candidates; if the video clearly contains multiple distinct recipes/variations, return multiple.',
       '- Use spoken words, on-screen text, and visuals (ingredients shown) to infer ingredient names and rough quantities.',
+      '- Return cooking instructions as an ordered list of steps (strings).',
       '- If a quantity is unknown, return null quantity.',
       '- If no recipe is present, return { "recipes": [] }.',
     ].join('\n');
@@ -1258,6 +1259,7 @@ function buildImportPrompt(source: ImportSource, maxIngredients: number, maxReci
     '- Extract 1 or more recipe candidates from the caption/description text.',
     '- If the text clearly contains multiple distinct recipes/variations, return multiple.',
     '- Prefer explicit ingredients from the text; do not invent ingredients if the text is not recipe-like.',
+    '- Return cooking instructions as an ordered list of steps (strings) when present.',
     '- If a quantity is unknown, return null quantity.',
     '- If no recipe is present, return { "recipes": [] }.',
   ].join('\n');
@@ -1313,7 +1315,7 @@ export async function importMealFromVideo(
       'You may be given a caption/description and/or a video.',
       'Return ONLY valid JSON (no markdown, no code fences, no explanations).',
       'The JSON MUST match exactly this shape:',
-      '{ "recipes": [ { "name": string, "cuisines": string[]|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string, "category": string|null } ] } ] }',
+      '{ "recipes": [ { "name": string, "cuisines": string[]|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string, "category": string|null } ], "instructions": string[] } ] }',
       'Rules:',
       `- recipes must be 0..${maxRecipes} items`,
       `- ingredients must be 1..${maxIngredients} items`,
@@ -1321,6 +1323,8 @@ export async function importMealFromVideo(
       '- prefer including quantity + unit for every ingredient, but quantity may be null',
       '- unit must never be null; choose a reasonable unit (g, piece, tbsp, tsp, cup, ml, etc.)',
       '- category should be one of: Produce, Pantry, Meat, Dairy, Bakery, Other (or null)',
+      '- instructions should be an ordered list of steps (0..25). If steps are not present, return an empty array.',
+      '- each instruction should be a single step string (no numbering like "1.")',
     ].join('\n');
 
     const runGemini = async (source: ImportSource): Promise<GeneratedMeal[]> => {

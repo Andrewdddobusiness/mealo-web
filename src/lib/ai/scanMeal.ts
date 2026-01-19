@@ -77,7 +77,7 @@ export async function scanMealFromImage(input: {
     'The image may show: (a) a cooked meal, (b) meal ingredients, or (c) a recipe (text).',
     'Return ONLY valid JSON (no markdown, no code fences, no explanations).',
     'The JSON MUST be ONE of these shapes:',
-    '- { "meal": { "name": string, "cuisines": string[]|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string, "category": string|null } ] } }',
+    '- { "meal": { "name": string, "cuisines": string[]|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string, "category": string|null } ], "instructions": string[] } }',
     '- OR { "error": "not_food" }',
     'Rules:',
     '- If the image is NOT food/ingredients/recipe (e.g. bottle, electronics, people, pets, household objects), return { "error": "not_food" }.',
@@ -88,10 +88,11 @@ export async function scanMealFromImage(input: {
     '- Prefer including quantity + unit, but if unsure you may return null quantity.',
     '- unit must never be null; choose a reasonable unit (g, piece, tbsp, tsp, cup, ml, etc.).',
     '- category should be one of: Produce, Pantry, Meat, Dairy, Bakery, Other (or null).',
+    '- instructions should be a short list of steps (0..15). If you cannot infer cooking steps from the image, return an empty array.',
   ].join('\n');
 
   const userPrompt = [
-    'If the image contains a meal/ingredients/recipe, return the meal name and main ingredients.',
+    'If the image contains a meal/ingredients/recipe, return the meal name, main ingredients, and brief cooking instructions (if inferable).',
     'If it does not look food-related, return { "error": "not_food" }.',
   ].join('\n');
 
