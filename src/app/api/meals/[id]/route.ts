@@ -17,6 +17,24 @@ import { eq, and } from 'drizzle-orm';
 
 const MAX_INGREDIENTS = 100;
 const MAX_INSTRUCTIONS = 60;
+const MAX_SOURCE_URL_LENGTH = 2048;
+
+function sanitizeSourceUrl(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = stripControlChars(value).trim();
+  if (!trimmed) return null;
+  const candidate = trimmed.length > MAX_SOURCE_URL_LENGTH ? trimmed.slice(0, MAX_SOURCE_URL_LENGTH) : trimmed;
+  try {
+    const parsed = new URL(candidate);
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== 'http:' && protocol !== 'https:') return null;
+    return candidate;
+  } catch {
+    return null;
+  }
+}
 
 function sanitizeIngredientKey(value: unknown): string {
   if (typeof value !== 'string') return '';
@@ -121,7 +139,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
     // 3. Update meal
     // Extract allowed fields
-    const { name, description, ingredients, instructions, image, cuisine, rating, isFavorite, userNotes } =
+    const { name, description, ingredients, instructions, image, cuisine, rating, isFavorite, userNotes, sourceUrl } =
       body as Partial<typeof meals.$inferInsert>;
     const updateData: Partial<typeof meals.$inferInsert> = {};
     
@@ -191,6 +209,12 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       } else {
         return new NextResponse('Invalid userNotes', { status: 400 });
       }
+    }
+
+    if (sourceUrl !== undefined) {
+      const cleaned = sanitizeSourceUrl(sourceUrl);
+      if (cleaned === undefined) return new NextResponse('Invalid sourceUrl', { status: 400 });
+      updateData.sourceUrl = cleaned;
     }
 
     if (Object.keys(updateData).length === 0) {

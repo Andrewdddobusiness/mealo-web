@@ -41,6 +41,24 @@ function canonicalIngredientsKey(ingredients: unknown): string {
 
 const MAX_INGREDIENTS = 100;
 const MAX_INSTRUCTIONS = 60;
+const MAX_SOURCE_URL_LENGTH = 2048;
+
+function sanitizeSourceUrl(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = stripControlChars(value).trim();
+  if (!trimmed) return null;
+  const candidate = trimmed.length > MAX_SOURCE_URL_LENGTH ? trimmed.slice(0, MAX_SOURCE_URL_LENGTH) : trimmed;
+  try {
+    const parsed = new URL(candidate);
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== 'http:' && protocol !== 'https:') return null;
+    return candidate;
+  } catch {
+    return null;
+  }
+}
 
 function sanitizeIngredientKey(value: unknown): string {
   if (typeof value !== 'string') return '';
@@ -121,6 +139,7 @@ export async function GET(req: Request) {
         m.ingredients,
         m.instructions,
         m.from_global_meal_id AS "fromGlobalMealId",
+        m.source_url AS "sourceUrl",
         m.rating,
         m.is_favorite AS "isFavorite",
         m.user_notes AS "userNotes",
@@ -245,6 +264,10 @@ export async function POST(req: Request) {
     const ratingRaw = (body as any)?.rating;
     const rating = typeof ratingRaw === 'number' && Number.isFinite(ratingRaw) ? Math.max(0, Math.min(5, ratingRaw)) : undefined;
     const instructions = sanitizeStringArray((body as any)?.instructions, { maxItems: MAX_INSTRUCTIONS, maxItemLength: 400 });
+    const sourceUrlInput = sanitizeSourceUrl((body as any)?.sourceUrl);
+    if ((body as any)?.sourceUrl !== undefined && sourceUrlInput === undefined) {
+      return new NextResponse('Invalid sourceUrl', { status: 400 });
+    }
 
     const newMeal: typeof meals.$inferInsert = {
       id,
@@ -254,6 +277,7 @@ export async function POST(req: Request) {
       ingredients: normalizedIngredients,
       instructions,
       fromGlobalMealId,
+      sourceUrl: sourceUrlInput,
       rating,
       isFavorite: typeof (body as any)?.isFavorite === 'boolean' ? (body as any).isFavorite : undefined,
       userNotes,
