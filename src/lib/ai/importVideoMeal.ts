@@ -130,6 +130,46 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
   }
 }
 
+const MAX_SAFE_REDIRECTS = 5;
+
+async function fetchWithTimeoutAndSafeRedirects(
+  urlRaw: string,
+  options: RequestInit,
+  timeoutMs: number,
+  label: string,
+  maxRedirects: number = MAX_SAFE_REDIRECTS,
+): Promise<Response> {
+  let currentUrl = ensureSafeHttpUrl(urlRaw, label);
+
+  for (let attempt = 0; attempt <= maxRedirects; attempt += 1) {
+    const res = await fetchWithTimeout(
+      currentUrl,
+      {
+        ...options,
+        redirect: 'manual',
+      },
+      timeoutMs,
+    );
+
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location');
+      try {
+        res.body?.cancel();
+      } catch {
+        // ignore
+      }
+      if (!location) return res;
+      const nextUrl = new URL(location, currentUrl).toString();
+      currentUrl = ensureSafeHttpUrl(nextUrl, label);
+      continue;
+    }
+
+    return res;
+  }
+
+  throw new AiValidationError(`Too many redirects while fetching ${label}.`);
+}
+
 type MetaTag = Record<string, string>;
 
 function parseMetaTags(html: string): MetaTag[] {
@@ -321,22 +361,13 @@ export function validateImportVideoMealInput(input: ImportVideoMealInput): Impor
   const urlRaw = safeTrim(input.url, MAX_URL_LENGTH);
   if (!urlRaw) throw new AiValidationError('Missing required field: url');
 
-  // Basic URL sanity; still allow unknown hosts.
-  try {
-    const parsed = new URL(urlRaw);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      throw new AiValidationError('URL must start with http:// or https://');
-    }
-  } catch (error) {
-    if (error instanceof AiValidationError) throw error;
-    throw new AiValidationError('Invalid URL.');
-  }
+  const url = ensureSafeHttpUrl(urlRaw, 'url');
 
   const maxIngredients = clampMaxIngredients(input.maxIngredients);
   const maxRecipes = clampMaxRecipes(input.maxRecipes);
 
   return {
-    url: urlRaw,
+    url,
     maxIngredients,
     maxRecipes,
   };
@@ -530,7 +561,7 @@ async function fetchRecipeWebsiteSource(
 
   let res: Response;
   try {
-    res = await fetchWithTimeout(websiteUrl, { method: 'GET', redirect: 'follow', headers }, 15_000);
+    res = await fetchWithTimeoutAndSafeRedirects(websiteUrl, { method: 'GET', headers }, 15_000, 'recipe website URL');
   } catch (error) {
     debug?.('website.fetch.error', { url: sanitizeUrlForLog(websiteUrl), message: error instanceof Error ? error.message : String(error) });
     return null;
@@ -706,12 +737,43 @@ function readEnvString(name: string, maxLen: number): string {
 }
 
 function isBlockedHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
+  const host = hostname.toLowerCase().replace(/\.$/, '');
+  if (!host) return true;
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host.endsWith('.local') || host.endsWith('.internal')) return true;
   if (host === '0.0.0.0' || host === '127.0.0.1' || host === '::1') return true;
+  if (host === '::') return true;
   if (host === '169.254.169.254') return true; // AWS metadata
+  if (host === 'metadata.google.internal' || host.endsWith('.google.internal')) return true;
 
-  // Block private IP literals to reduce SSRF risk (does not cover DNS resolution).
+  if (host.startsWith('fc') || host.startsWith('fd')) return true; // IPv6 unique local
+  if (/^fe[89ab][0-9a-f]:/.test(host)) return true; // IPv6 link-local (fe80::/10)
+  if (host.startsWith('::ffff:')) return true; // IPv4-mapped IPv6
+
+  const decodeIpv4NumericHost = (raw: string): string | null => {
+    const MAX_UINT32 = 0xffff_ffff;
+
+    if (/^\d+$/.test(raw)) {
+      const parsed = Number.parseInt(raw, 10);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_UINT32) return null;
+      const n = parsed >>> 0;
+      return `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`;
+    }
+
+    if (/^0x[0-9a-f]+$/.test(raw)) {
+      const parsed = Number.parseInt(raw.slice(2), 16);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_UINT32) return null;
+      const n = parsed >>> 0;
+      return `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`;
+    }
+
+    return null;
+  };
+
+  const numericIp = decodeIpv4NumericHost(host);
+  if (numericIp && isBlockedHost(numericIp)) return true;
+
+  // Block private IPv4 literals to reduce SSRF risk (does not cover DNS resolution).
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
     const parts = host.split('.').map((p) => Number.parseInt(p, 10));
     if (parts.some((p) => !Number.isFinite(p) || p < 0 || p > 255)) return true;
@@ -739,6 +801,9 @@ function ensureSafeHttpUrl(value: string, label: string): string {
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     throw new AiValidationError(`Invalid ${label} protocol.`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new AiValidationError(`Unsafe ${label}.`);
   }
   if (!parsed.hostname || isBlockedHost(parsed.hostname)) {
     throw new AiValidationError(`Unsafe ${label}.`);
@@ -951,15 +1016,7 @@ async function resolveVideoFromUrlWithDebug(
     'accept-language': 'en-US,en;q=0.9',
   } satisfies Record<string, string>;
 
-  const first = await fetchWithTimeout(
-    url,
-    {
-      method: 'GET',
-      redirect: 'follow',
-      headers,
-    },
-    12_000,
-  );
+  const first = await fetchWithTimeoutAndSafeRedirects(url, { method: 'GET', headers }, 12_000, 'video URL');
 
   if (!first.ok) {
     debug?.('fetch.first.error', { url: sanitizeUrlForLog(url), status: first.status });
@@ -1047,10 +1104,11 @@ async function resolveVideoFromUrlWithDebug(
       for (const attempt of embedAttempts) {
         try {
           debug?.('embed.fetch.start', { url: sanitizeUrlForLog(attempt.url), tag: attempt.tag });
-          const embedRes = await fetchWithTimeout(
+          const embedRes = await fetchWithTimeoutAndSafeRedirects(
             attempt.url,
-            { method: 'GET', redirect: 'follow', headers },
+            { method: 'GET', headers },
             12_000,
+            'embed URL',
           );
           if (!embedRes.ok) {
             debug?.('embed.fetch.error', {
@@ -1100,10 +1158,11 @@ async function resolveVideoFromUrlWithDebug(
             videoUrl: sanitizeUrlForLog(embedExtracted.url),
           });
 
-          const videoRes = await fetchWithTimeout(
+          const videoRes = await fetchWithTimeoutAndSafeRedirects(
             embedExtracted.url,
-            { method: 'GET', redirect: 'follow', headers },
+            { method: 'GET', headers },
             12_000,
+            'video URL',
           );
           if (!videoRes.ok) continue;
 
@@ -1149,10 +1208,11 @@ async function resolveVideoFromUrlWithDebug(
       videoUrl: sanitizeUrlForLog(extracted.url),
     });
 
-    const videoRes = await fetchWithTimeout(
+    const videoRes = await fetchWithTimeoutAndSafeRedirects(
       extracted.url,
-      { method: 'GET', redirect: 'follow', headers },
+      { method: 'GET', headers },
       12_000,
+      'video URL',
     );
 
     if (!videoRes.ok) {
