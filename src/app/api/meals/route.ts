@@ -138,6 +138,7 @@ export async function GET(req: Request) {
         m.created_by AS "createdBy",
         m.ingredients,
         m.instructions,
+        m.nutrition AS "nutrition",
         m.from_global_meal_id AS "fromGlobalMealId",
         m.source_url AS "sourceUrl",
         m.rating,

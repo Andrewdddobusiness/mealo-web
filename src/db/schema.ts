@@ -38,6 +38,7 @@ export const meals = pgTable(
     createdBy: text('created_by').references(() => users.id),
     ingredients: jsonb('ingredients').default([]),
     instructions: jsonb('instructions').default([]),
+    nutrition: jsonb('nutrition'),
     fromGlobalMealId: text('from_global_meal_id'),
     sourceUrl: text('source_url'),
     rating: integer('rating').default(0),

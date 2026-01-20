@@ -157,6 +157,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (ingredients !== undefined) {
       if (!Array.isArray(ingredients)) return new NextResponse('Invalid ingredients', { status: 400 });
       updateData.ingredients = sanitizeIngredients(normalizeIngredients(ingredients));
+      updateData.nutrition = null;
     }
 
     if (instructions !== undefined) {
