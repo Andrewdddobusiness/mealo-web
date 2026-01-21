@@ -1,15 +1,15 @@
-import { randomUUID } from 'crypto';
-import { sql } from 'drizzle-orm';
-import type { NeonHttpDatabase } from 'drizzle-orm/neon-http';
+import { randomUUID } from "crypto";
+import { sql } from "drizzle-orm";
+import type { NeonHttpDatabase } from "drizzle-orm/neon-http";
 
-import * as schema from '@/db/schema';
-import type { AiFeature } from '@/lib/ai/requireProSubscription';
-import { subscriptions, users } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import * as schema from "@/db/schema";
+import type { AiFeature } from "@/lib/ai/requireProSubscription";
+import { subscriptions, users } from "@/db/schema";
+import { eq } from "drizzle-orm";
 
 type DbClient = NeonHttpDatabase<typeof schema>;
 
-const AI_CREDITS_FEATURE = 'ai_credits';
+const AI_CREDITS_FEATURE = "ai_credits";
 
 export type AiUsagePeriod = {
   key: string; // YYYY-MM
@@ -17,19 +17,24 @@ export type AiUsagePeriod = {
   endsAt: Date;
 };
 
-export type AiUsageTier = 'free' | 'trial' | 'pro';
+export type AiUsageTier = "free" | "trial" | "pro";
 
 export class AiUsageLimitError extends Error {
-  readonly name = 'AiUsageLimitError';
-  readonly code = 'usage_limit_reached';
+  readonly name = "AiUsageLimitError";
+  readonly code = "usage_limit_reached";
   readonly status = 429;
   readonly feature: AiFeature;
   readonly limit: number;
   readonly used: number;
   readonly period: AiUsagePeriod;
 
-  constructor(input: { feature: AiFeature; limit: number; used: number; period: AiUsagePeriod }) {
-    super('AI usage limit reached');
+  constructor(input: {
+    feature: AiFeature;
+    limit: number;
+    used: number;
+    period: AiUsagePeriod;
+  }) {
+    super("AI usage limit reached");
     this.feature = input.feature;
     this.limit = input.limit;
     this.used = input.used;
@@ -38,23 +43,26 @@ export class AiUsageLimitError extends Error {
 }
 
 export class AiCreditsLimitError extends Error {
-  readonly name = 'AiCreditsLimitError';
-  readonly code = 'ai_credits_limit_reached';
+  readonly name = "AiCreditsLimitError";
+  readonly code = "ai_credits_limit_reached";
   readonly status = 429;
   readonly limit: number;
   readonly used: number;
   readonly period: AiUsagePeriod;
 
   constructor(input: { limit: number; used: number; period: AiUsagePeriod }) {
-    super('AI credits limit reached');
+    super("AI credits limit reached");
     this.limit = input.limit;
     this.used = input.used;
     this.period = input.period;
   }
 }
 
-function parseNonNegativeInt(value: string | undefined, fallback: number): number {
-  const parsed = Number.parseInt(value ?? '', 10);
+function parseNonNegativeInt(
+  value: string | undefined,
+  fallback: number,
+): number {
+  const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
@@ -69,7 +77,7 @@ export function getCurrentAiUsagePeriod(now: Date = new Date()): AiUsagePeriod {
   const monthIndex = now.getUTCMonth(); // 0-11
   const startsAt = new Date(Date.UTC(year, monthIndex, 1, 0, 0, 0, 0));
   const endsAt = new Date(Date.UTC(year, monthIndex + 1, 1, 0, 0, 0, 0));
-  const key = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+  const key = `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
   return { key, startsAt, endsAt };
 }
 
@@ -78,27 +86,39 @@ function resolveSubscriptionTier(
   now: Date,
   opts?: { proOverride?: boolean },
 ): AiUsageTier {
-  if (opts?.proOverride) return 'pro';
-  if (!sub) return 'free';
-  const expiresAt = sub.expiresAt instanceof Date ? sub.expiresAt : new Date(sub.expiresAt as any);
+  if (opts?.proOverride) return "pro";
+  if (!sub) return "free";
+  const expiresAt =
+    sub.expiresAt instanceof Date
+      ? sub.expiresAt
+      : new Date(sub.expiresAt as any);
   const isActive = Boolean(sub.isActive) && expiresAt > now;
-  if (!isActive) return 'free';
-  return sub.isTrial ? 'trial' : 'pro';
+  if (!isActive) return "free";
+  return sub.isTrial ? "trial" : "pro";
 }
 
-export function getAiUsagePeriodForSubscription(
-  input: { subscription?: typeof subscriptions.$inferSelect; now?: Date },
-): AiUsagePeriod {
+export function getAiUsagePeriodForSubscription(input: {
+  subscription?: typeof subscriptions.$inferSelect;
+  now?: Date;
+}): AiUsagePeriod {
   const now = input.now ?? new Date();
   const tier = resolveSubscriptionTier(input.subscription, now);
-  if (tier === 'free') return getCurrentAiUsagePeriod(now);
+  if (tier === "free") return getCurrentAiUsagePeriod(now);
 
   const sub = input.subscription;
   if (!sub) return getCurrentAiUsagePeriod(now);
 
   const startsAtRaw = sub.currentPeriodStart;
-  const startsAt = startsAtRaw instanceof Date ? startsAtRaw : startsAtRaw ? new Date(startsAtRaw as any) : null;
-  const endsAt = sub.expiresAt instanceof Date ? sub.expiresAt : new Date(sub.expiresAt as any);
+  const startsAt =
+    startsAtRaw instanceof Date
+      ? startsAtRaw
+      : startsAtRaw
+        ? new Date(startsAtRaw as any)
+        : null;
+  const endsAt =
+    sub.expiresAt instanceof Date
+      ? sub.expiresAt
+      : new Date(sub.expiresAt as any);
 
   // If we don't have a reliable billing period start, fall back to calendar month.
   if (!startsAt || !(startsAt < endsAt)) return getCurrentAiUsagePeriod(now);
@@ -109,61 +129,74 @@ export function getAiUsagePeriodForSubscription(
 }
 
 export function getMonthlyAiLimit(feature: AiFeature): number {
-  if (feature === 'ai_scan_meal') {
+  if (feature === "ai_scan_meal") {
     return parseNonNegativeInt(process.env.AI_SCAN_MEAL_MONTHLY_LIMIT, 30);
   }
-  if (feature === 'ai_import_video_meal') {
-    return parseNonNegativeInt(process.env.AI_IMPORT_VIDEO_MEAL_MONTHLY_LIMIT, 20);
+  if (feature === "ai_import_video_meal") {
+    return parseNonNegativeInt(
+      process.env.AI_IMPORT_VIDEO_MEAL_MONTHLY_LIMIT,
+      20,
+    );
   }
   return parseNonNegativeInt(process.env.AI_GENERATE_MEAL_MONTHLY_LIMIT, 60);
 }
 
 export function getTrialAiLimit(feature: AiFeature): number {
-  if (feature === 'ai_scan_meal') {
+  if (feature === "ai_scan_meal") {
     return parseNonNegativeInt(process.env.AI_TRIAL_SCAN_MEAL_LIMIT, 10);
   }
-  if (feature === 'ai_import_video_meal') {
+  if (feature === "ai_import_video_meal") {
     return parseNonNegativeInt(process.env.AI_TRIAL_IMPORT_VIDEO_MEAL_LIMIT, 0);
   }
   return parseNonNegativeInt(process.env.AI_TRIAL_GENERATE_MEAL_LIMIT, 5);
 }
 
-export function getAiLimitForTier(feature: AiFeature, tier: AiUsageTier): number {
-  return tier === 'trial' ? getTrialAiLimit(feature) : getMonthlyAiLimit(feature);
+export function getAiLimitForTier(
+  feature: AiFeature,
+  tier: AiUsageTier,
+): number {
+  return tier === "trial"
+    ? getTrialAiLimit(feature)
+    : getMonthlyAiLimit(feature);
 }
 
 export function getAiCreditCost(feature: AiFeature): number {
-  if (feature === 'ai_scan_meal') {
+  if (feature === "ai_scan_meal") {
     return parseNonNegativeInt(process.env.AI_SCAN_MEAL_CREDIT_COST, 2);
   }
-  if (feature === 'ai_import_video_meal') {
+  if (feature === "ai_import_video_meal") {
     return parseNonNegativeInt(process.env.AI_IMPORT_VIDEO_MEAL_CREDIT_COST, 4);
   }
   return parseNonNegativeInt(process.env.AI_GENERATE_MEAL_CREDIT_COST, 1);
 }
 
 export function getMonthlyAiCreditsLimit(): number {
-  const explicit = parseOptionalNonNegativeInt(process.env.AI_CREDITS_MONTHLY_LIMIT);
+  const explicit = parseOptionalNonNegativeInt(
+    process.env.AI_CREDITS_MONTHLY_LIMIT,
+  );
   if (explicit != null) return explicit;
 
   return (
-    getMonthlyAiLimit('ai_generate_meal') * getAiCreditCost('ai_generate_meal') +
-    getMonthlyAiLimit('ai_scan_meal') * getAiCreditCost('ai_scan_meal') +
-    getMonthlyAiLimit('ai_import_video_meal') * getAiCreditCost('ai_import_video_meal')
+    getMonthlyAiLimit("ai_generate_meal") *
+      getAiCreditCost("ai_generate_meal") +
+    getMonthlyAiLimit("ai_scan_meal") * getAiCreditCost("ai_scan_meal") +
+    getMonthlyAiLimit("ai_import_video_meal") *
+      getAiCreditCost("ai_import_video_meal")
   );
 }
 
 export function getAiCreditsLimitForTier(tier: AiUsageTier): number {
-  if (tier !== 'trial') return getMonthlyAiCreditsLimit();
+  if (tier !== "trial") return getMonthlyAiCreditsLimit();
   return (
-    getTrialAiLimit('ai_generate_meal') * getAiCreditCost('ai_generate_meal') +
-    getTrialAiLimit('ai_scan_meal') * getAiCreditCost('ai_scan_meal') +
-    getTrialAiLimit('ai_import_video_meal') * getAiCreditCost('ai_import_video_meal')
+    getTrialAiLimit("ai_generate_meal") * getAiCreditCost("ai_generate_meal") +
+    getTrialAiLimit("ai_scan_meal") * getAiCreditCost("ai_scan_meal") +
+    getTrialAiLimit("ai_import_video_meal") *
+      getAiCreditCost("ai_import_video_meal")
   );
 }
 
 function coerceUsed(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
@@ -182,11 +215,25 @@ export async function consumeAiUsage(
       .where(eq(users.id, userId))
       .limit(1)
       .then((rows) => rows[0]),
-    db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).limit(1).then((rows) => rows[0]),
+    db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.userId, userId))
+      .limit(1)
+      .then((rows) => rows[0]),
   ]);
-  const tier = resolveSubscriptionTier(subscription, now, { proOverride: Boolean(userRow?.proOverride) });
+
+  const hasProOverride = Boolean(userRow?.proOverride);
+  const tier = resolveSubscriptionTier(subscription, now, {
+    proOverride: hasProOverride,
+  });
   const period = getAiUsagePeriodForSubscription({ subscription, now });
   const limit = getAiLimitForTier(feature, tier);
+
+  // Skip per-feature usage limit enforcement for dev/test accounts with proOverride
+  if (hasProOverride) {
+    return { used: 0, limit: 999999, period };
+  }
 
   if (limit <= 0) {
     throw new AiUsageLimitError({ feature, limit, used: 0, period });
@@ -235,14 +282,28 @@ export async function consumeAiCredits(
       .where(eq(users.id, userId))
       .limit(1)
       .then((rows) => rows[0]),
-    db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).limit(1).then((rows) => rows[0]),
+    db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.userId, userId))
+      .limit(1)
+      .then((rows) => rows[0]),
   ]);
-  const tier = resolveSubscriptionTier(subscription, now, { proOverride: Boolean(userRow?.proOverride) });
+
+  const hasProOverride = Boolean(userRow?.proOverride);
+  const tier = resolveSubscriptionTier(subscription, now, {
+    proOverride: hasProOverride,
+  });
   const period = getAiUsagePeriodForSubscription({ subscription, now });
   const limit = getAiCreditsLimitForTier(tier);
   const cost = getAiCreditCost(feature);
 
   if (cost <= 0) {
+    return { used: 0, limit, period };
+  }
+
+  // Skip AI credits limit enforcement for dev/test accounts with proOverride
+  if (hasProOverride) {
     return { used: 0, limit, period };
   }
 
@@ -288,7 +349,9 @@ export async function getAiUsageForPeriod(
   userId: string,
   period: AiUsagePeriod,
   opts?: { tier?: AiUsageTier },
-): Promise<Record<AiFeature, { used: number; limit: number; remaining: number }>> {
+): Promise<
+  Record<AiFeature, { used: number; limit: number; remaining: number }>
+> {
   const rows = await db.execute(sql`
     SELECT feature, used
     FROM ai_usage
@@ -298,20 +361,21 @@ export async function getAiUsageForPeriod(
 
   const usageByFeature = new Map<string, number>();
   for (const row of rows.rows ?? []) {
-    const feature = typeof (row as any).feature === 'string' ? (row as any).feature : '';
+    const feature =
+      typeof (row as any).feature === "string" ? (row as any).feature : "";
     const used = coerceUsed((row as any).used) ?? 0;
     if (!feature) continue;
     usageByFeature.set(feature, used);
   }
 
-  const tier = opts?.tier ?? 'pro';
-  const scanLimit = getAiLimitForTier('ai_scan_meal', tier);
-  const generateLimit = getAiLimitForTier('ai_generate_meal', tier);
-  const importVideoLimit = getAiLimitForTier('ai_import_video_meal', tier);
+  const tier = opts?.tier ?? "pro";
+  const scanLimit = getAiLimitForTier("ai_scan_meal", tier);
+  const generateLimit = getAiLimitForTier("ai_generate_meal", tier);
+  const importVideoLimit = getAiLimitForTier("ai_import_video_meal", tier);
 
-  const scanUsed = usageByFeature.get('ai_scan_meal') ?? 0;
-  const generateUsed = usageByFeature.get('ai_generate_meal') ?? 0;
-  const importVideoUsed = usageByFeature.get('ai_import_video_meal') ?? 0;
+  const scanUsed = usageByFeature.get("ai_scan_meal") ?? 0;
+  const generateUsed = usageByFeature.get("ai_generate_meal") ?? 0;
+  const importVideoUsed = usageByFeature.get("ai_import_video_meal") ?? 0;
 
   return {
     ai_scan_meal: {
@@ -338,7 +402,7 @@ export async function getAiCreditsForPeriod(
   period: AiUsagePeriod,
   opts?: { tier?: AiUsageTier },
 ): Promise<{ used: number; limit: number; remaining: number }> {
-  const limit = getAiCreditsLimitForTier(opts?.tier ?? 'pro');
+  const limit = getAiCreditsLimitForTier(opts?.tier ?? "pro");
 
   const row = await db.execute(sql`
     SELECT used
