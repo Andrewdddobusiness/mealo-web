@@ -8,6 +8,14 @@ import {
   validateGeneratedMeal,
 } from './generateMeal';
 
+export type ScanRegion = {
+  bbox?: { x: number; y: number; width: number; height: number };
+  polygon?: Array<{ x: number; y: number }>;
+};
+
+export type ScanCandidate = { name: string; confidence?: number };
+export type ScanDetection = { name: string; confidence?: number; bbox: { x: number; y: number; width: number; height: number } };
+
 type GeminiGenerateResponse = {
   candidates?: Array<{
     content?: {
@@ -23,6 +31,100 @@ const DEFAULT_MAX_INGREDIENTS = 12;
 function extractTextFromGemini(json: GeminiGenerateResponse): string {
   const parts = json.candidates?.[0]?.content?.parts ?? [];
   return parts.map((p) => (typeof p.text === 'string' ? p.text : '')).join('').trim();
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeConfidence(raw: unknown): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
+  return clamp(raw, 0, 1);
+}
+
+function normalizeBbox(raw: unknown): ScanRegion['bbox'] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Record<string, unknown>;
+  const x = typeof obj.x === 'number' && Number.isFinite(obj.x) ? obj.x : undefined;
+  const y = typeof obj.y === 'number' && Number.isFinite(obj.y) ? obj.y : undefined;
+  const width = typeof obj.width === 'number' && Number.isFinite(obj.width) ? obj.width : undefined;
+  const height = typeof obj.height === 'number' && Number.isFinite(obj.height) ? obj.height : undefined;
+  if (x == null || y == null || width == null || height == null) return undefined;
+  const pad = 0.04;
+  const cw = clamp(width + pad * 2, 0.05, 1);
+  const ch = clamp(height + pad * 2, 0.05, 1);
+  const cx = clamp(x - pad, 0, 1 - cw);
+  const cy = clamp(y - pad, 0, 1 - ch);
+  return { x: cx, y: cy, width: cw, height: ch };
+}
+
+function normalizeCandidate(raw: unknown): ScanCandidate | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const name = typeof obj.name === 'string' ? obj.name.trim() : '';
+  if (!name) return null;
+  const confidence = normalizeConfidence(obj.confidence);
+  const out: ScanCandidate = { name: name.slice(0, 80) };
+  if (confidence != null) out.confidence = confidence;
+  return out;
+}
+
+function normalizeDetection(raw: unknown): ScanDetection | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const name = typeof obj.name === 'string' ? obj.name.trim() : '';
+  if (!name) return null;
+  const bbox = normalizeBbox(obj.bbox);
+  if (!bbox) return null;
+  const confidence = normalizeConfidence(obj.confidence);
+  const out: ScanDetection = { name: name.slice(0, 80), bbox: bbox as { x: number; y: number; width: number; height: number } };
+  if (confidence != null) out.confidence = confidence;
+  return out;
+}
+
+function extractRegion(parsed: unknown): ScanRegion | undefined {
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const regionRaw = (parsed as any).region;
+  if (!regionRaw || typeof regionRaw !== 'object') return undefined;
+  const bbox = normalizeBbox((regionRaw as any).bbox);
+  if (bbox) return { bbox };
+  return undefined;
+}
+
+function extractCandidates(parsed: unknown): ScanCandidate[] | undefined {
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const raw = (parsed as any).candidates;
+  if (!Array.isArray(raw)) return undefined;
+  const seen = new Set<string>();
+  const out: ScanCandidate[] = [];
+  for (const item of raw) {
+    const candidate = normalizeCandidate(item);
+    if (!candidate) continue;
+    const key = candidate.name.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(candidate);
+    if (out.length >= 3) break;
+  }
+  return out.length ? out : undefined;
+}
+
+function extractDetections(parsed: unknown): ScanDetection[] | undefined {
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const raw = (parsed as any).detections;
+  if (!Array.isArray(raw)) return undefined;
+  const seen = new Set<string>();
+  const out: ScanDetection[] = [];
+  for (const item of raw) {
+    const detection = normalizeDetection(item);
+    if (!detection) continue;
+    const key = detection.name.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(detection);
+    if (out.length >= 6) break;
+  }
+  return out.length ? out : undefined;
 }
 
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
@@ -50,7 +152,13 @@ export async function scanMealFromImage(input: {
   imageBase64: string;
   mimeType: string;
   maxIngredients?: number;
-}): Promise<GeneratedMeal> {
+}): Promise<{
+  meal: GeneratedMeal;
+  region?: ScanRegion;
+  confidence?: number;
+  candidates?: ScanCandidate[];
+  detections?: ScanDetection[];
+}> {
   const provider = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
   if (provider !== 'gemini') {
     throw new AiConfigError(`Unsupported AI provider: ${provider}`);
@@ -77,10 +185,11 @@ export async function scanMealFromImage(input: {
     'The image may show: (a) a cooked meal, (b) meal ingredients, or (c) a recipe (text).',
     'Return ONLY valid JSON (no markdown, no code fences, no explanations).',
     'The JSON MUST be ONE of these shapes:',
-    '- { "meal": { "name": string, "cuisines": string[]|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string, "category": string|null } ], "instructions": string[] } }',
+    '- { "meal": { "name": string, "cuisines": string[]|null, "ingredients": [ { "name": string, "quantity": number|null, "unit": string, "category": string|null } ], "instructions": string[] }, "confidence"?: number, "candidates"?: [ { "name": string, "confidence"?: number } ], "region"?: { "bbox"?: { "x": number, "y": number, "width": number, "height": number } }, "detections"?: [ { "name": string, "confidence"?: number, "bbox": { "x": number, "y": number, "width": number, "height": number } } ] }',
     '- OR { "error": "not_food" }',
     'Rules:',
-    '- If the image is NOT food/ingredients/recipe (e.g. bottle, electronics, people, pets, household objects), return { "error": "not_food" }.',
+    '- If the image is NOT food/ingredients/recipe (e.g. electronics, people, pets, cleaning products, household objects), return { "error": "not_food" }.',
+    '- Packaged food or beverages (including bottles/cans with drinks) count as food.',
     '- If uncertain whether it is food/recipe, prefer { "error": "not_food" } rather than guessing.',
     '- Otherwise, make a best-effort identification from the image.',
     `- ingredients must be 1..${maxIngredients} items`,
@@ -89,6 +198,10 @@ export async function scanMealFromImage(input: {
     '- unit must never be null; choose a reasonable unit (g, piece, tbsp, tsp, cup, ml, etc.).',
     '- category should be one of: Produce, Pantry, Meat, Dairy, Bakery, Other (or null).',
     '- instructions should be a short list of steps (0..15). If you cannot infer cooking steps from the image, return an empty array.',
+    '- If the image contains a clear meal subject, include region.bbox as a best-effort bounding box around the FULL dish/drink/food item (normalized 0..1).',
+    '- confidence is optional and should be 0..1 for the primary name.',
+    '- candidates (optional) should be 0..3 alternative meal names (no brands), each with optional confidence 0..1.',
+    '- detections (optional) should be 0..6 detected food items in the photo (only include if multiple distinct food items are visible). Each detection must have a bbox around the FULL item and an optional confidence 0..1.',
   ].join('\n');
 
   const userPrompt = [
@@ -131,6 +244,10 @@ export async function scanMealFromImage(input: {
 
   const text = extractTextFromGemini(json ?? {});
   const parsed = extractJsonObject(text);
+  const region = extractRegion(parsed);
+  const confidence = normalizeConfidence((parsed as any)?.confidence);
+  const candidates = extractCandidates(parsed);
+  const detections = extractDetections(parsed);
   const rootError =
     parsed && typeof parsed === 'object'
       ? ((parsed as any).error ?? (parsed as any).meal?.error ?? undefined)
@@ -142,5 +259,6 @@ export async function scanMealFromImage(input: {
     throw error;
   }
 
-  return validateGeneratedMeal(parsed, maxIngredients);
+  const meal = validateGeneratedMeal(parsed, maxIngredients);
+  return { meal, region, confidence, candidates, detections };
 }

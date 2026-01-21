@@ -98,7 +98,16 @@ export async function POST(req: Request) {
       maxIngredients,
     });
 
-    const res = NextResponse.json({ meal: generated }, { status: 200 });
+    const res = NextResponse.json(
+      {
+        meal: generated.meal,
+        confidence: generated.confidence,
+        candidates: generated.candidates,
+        region: generated.region,
+        detections: generated.detections,
+      },
+      { status: 200 },
+    );
     res.headers.set('x-request-id', requestId);
     res.headers.set('cache-control', 'no-store');
     return res;
