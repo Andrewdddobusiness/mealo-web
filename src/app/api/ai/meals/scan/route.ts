@@ -12,6 +12,7 @@ import {
 import { scanMealFromImage } from '@/lib/ai/scanMeal';
 import { requireProSubscriptionForAi, SubscriptionRequiredError } from '@/lib/ai/requireProSubscription';
 import { AiCreditsLimitError, AiUsageLimitError, consumeAiCredits, consumeAiUsage } from '@/lib/ai/aiUsage';
+import { getImageSizeFromBytes } from '@/lib/imageSize';
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 6;
@@ -91,11 +92,13 @@ export async function POST(req: Request) {
 
     const bytes = Buffer.from(await file.arrayBuffer());
     const imageBase64 = bytes.toString('base64');
+    const imageSize = getImageSizeFromBytes(bytes, normalizedType);
 
     const generated = await scanMealFromImage({
       imageBase64,
       mimeType: normalizedType,
       maxIngredients,
+      imageSize: imageSize ?? undefined,
     });
 
     const res = NextResponse.json(

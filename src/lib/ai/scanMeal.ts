@@ -7,6 +7,7 @@ import {
   extractJsonObject,
   validateGeneratedMeal,
 } from "./generateMeal";
+import type { ImageSize } from "@/lib/imageSize";
 
 export type ScanRegion = {
   bbox?: { x: number; y: number; width: number; height: number };
@@ -49,28 +50,52 @@ function normalizeConfidence(raw: unknown): number | undefined {
   return clamp(raw, 0, 1);
 }
 
-function normalizeBbox(raw: unknown): ScanRegion["bbox"] | undefined {
+function normalizeBbox(
+  raw: unknown,
+  imageSize?: ImageSize,
+): ScanRegion["bbox"] | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const obj = raw as Record<string, unknown>;
-  const x =
+  let x =
     typeof obj.x === "number" && Number.isFinite(obj.x) ? obj.x : undefined;
-  const y =
+  let y =
     typeof obj.y === "number" && Number.isFinite(obj.y) ? obj.y : undefined;
-  const width =
+  let width =
     typeof obj.width === "number" && Number.isFinite(obj.width)
       ? obj.width
       : undefined;
-  const height =
+  let height =
     typeof obj.height === "number" && Number.isFinite(obj.height)
       ? obj.height
       : undefined;
   if (x == null || y == null || width == null || height == null)
     return undefined;
-  const pad = 0.04;
-  const cw = clamp(width + pad * 2, 0.05, 1);
-  const ch = clamp(height + pad * 2, 0.05, 1);
-  const cx = clamp(x - pad, 0, 1 - cw);
-  const cy = clamp(y - pad, 0, 1 - ch);
+
+  // Be tolerant if the model returns pixel bboxes instead of normalized ones.
+  // We can normalize safely only when we know the actual image size.
+  const looksLikePixels =
+    Boolean(imageSize?.width && imageSize?.height) &&
+    (x > 2 || y > 2 || width > 2 || height > 2);
+  if (looksLikePixels && imageSize) {
+    x = x / imageSize.width;
+    y = y / imageSize.height;
+    width = width / imageSize.width;
+    height = height / imageSize.height;
+  }
+
+  // Gemini sometimes returns slightly oversized normalized bboxes. Apply a small *adaptive* padding
+  // so large objects don't become a full-screen box after clamping.
+  const w = clamp(width, 0, 1);
+  const h = clamp(height, 0, 1);
+  if (w <= 0 || h <= 0) return undefined;
+
+  const maxSide = Math.max(w, h);
+  const pad = Math.min(0.02, Math.max(0, (1 - maxSide) / 4));
+
+  const cw = clamp(w + pad * 2, 0.05, 1);
+  const ch = clamp(h + pad * 2, 0.05, 1);
+  const cx = clamp(clamp(x, 0, 1) - pad, 0, 1 - cw);
+  const cy = clamp(clamp(y, 0, 1) - pad, 0, 1 - ch);
   return { x: cx, y: cy, width: cw, height: ch };
 }
 
@@ -85,12 +110,12 @@ function normalizeCandidate(raw: unknown): ScanCandidate | null {
   return out;
 }
 
-function normalizeDetection(raw: unknown): ScanDetection | null {
+function normalizeDetection(raw: unknown, imageSize?: ImageSize): ScanDetection | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
   const name = typeof obj.name === "string" ? obj.name.trim() : "";
   if (!name) return null;
-  const bbox = normalizeBbox(obj.bbox);
+  const bbox = normalizeBbox(obj.bbox, imageSize);
   if (!bbox) return null;
   const confidence = normalizeConfidence(obj.confidence);
   const out: ScanDetection = {
@@ -101,11 +126,11 @@ function normalizeDetection(raw: unknown): ScanDetection | null {
   return out;
 }
 
-function extractRegion(parsed: unknown): ScanRegion | undefined {
+function extractRegion(parsed: unknown, imageSize?: ImageSize): ScanRegion | undefined {
   if (!parsed || typeof parsed !== "object") return undefined;
   const regionRaw = (parsed as any).region;
   if (!regionRaw || typeof regionRaw !== "object") return undefined;
-  const bbox = normalizeBbox((regionRaw as any).bbox);
+  const bbox = normalizeBbox((regionRaw as any).bbox, imageSize);
   if (bbox) return { bbox };
   return undefined;
 }
@@ -128,14 +153,14 @@ function extractCandidates(parsed: unknown): ScanCandidate[] | undefined {
   return out.length ? out : undefined;
 }
 
-function extractDetections(parsed: unknown): ScanDetection[] | undefined {
+function extractDetections(parsed: unknown, imageSize?: ImageSize): ScanDetection[] | undefined {
   if (!parsed || typeof parsed !== "object") return undefined;
   const raw = (parsed as any).detections;
   if (!Array.isArray(raw)) return undefined;
   const seen = new Set<string>();
   const out: ScanDetection[] = [];
   for (const item of raw) {
-    const detection = normalizeDetection(item);
+    const detection = normalizeDetection(item, imageSize);
     if (!detection) continue;
     const key = detection.name.trim().toLowerCase();
     if (!key || seen.has(key)) continue;
@@ -177,6 +202,7 @@ export async function scanMealFromImage(input: {
   imageBase64: string;
   mimeType: string;
   maxIngredients?: number;
+  imageSize?: ImageSize;
 }): Promise<{
   meal: GeneratedMeal;
   region?: ScanRegion;
@@ -230,6 +256,7 @@ export async function scanMealFromImage(input: {
     "- category should be one of: Produce, Pantry, Meat, Dairy, Bakery, Other (or null).",
     "- instructions should be a short list of steps (0..15). If you cannot infer cooking steps from the image, return an empty array.",
     "- If the image contains a clear meal subject, include region.bbox as a best-effort bounding box around the FULL dish/drink/food item (normalized 0..1).",
+    '- Bbox coordinates MUST be normalized 0..1 floats where x,y is top-left and width,height are sizes. Do NOT use pixels and do NOT use x2/y2 (right/bottom).',
     "- confidence is optional and should be 0..1 for the primary name.",
     "- candidates (optional) should be 0..3 alternative meal names (no brands), each with optional confidence 0..1.",
     '- IMPORTANT: The "detections" array is REQUIRED. Analyze the image and identify ALL distinct food items visible (1..6 items). For each food item, provide its name and a bounding box (normalized 0..1 coordinates) around the FULL item. Include confidence 0..1 if possible.',
@@ -281,10 +308,10 @@ export async function scanMealFromImage(input: {
 
   const text = extractTextFromGemini(json ?? {});
   const parsed = extractJsonObject(text);
-  const region = extractRegion(parsed);
+  const region = extractRegion(parsed, input.imageSize);
   const confidence = normalizeConfidence((parsed as any)?.confidence);
   const candidates = extractCandidates(parsed);
-  const detections = extractDetections(parsed);
+  const detections = extractDetections(parsed, input.imageSize);
   const rootError =
     parsed && typeof parsed === "object"
       ? ((parsed as any).error ?? (parsed as any).meal?.error ?? undefined)
