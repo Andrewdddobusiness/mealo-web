@@ -11,6 +11,7 @@ import {
   validateMealName,
   validateUuid,
 } from '@/lib/validation';
+import { getMealsColumnAvailability, getMealsSelect } from '@/db/compat';
 import { db } from '../../../db';
 import { meals, household_members } from '../../../db/schema';
 import { eq, and, isNull, sql } from 'drizzle-orm';
@@ -127,6 +128,10 @@ export async function GET(req: Request) {
         return new NextResponse("Database not configured", { status: 500 });
     }
 
+    const mealsColumns = await getMealsColumnAvailability(db);
+    const nutritionSelect = mealsColumns.nutrition ? sql`m.nutrition AS "nutrition",` : sql`NULL::jsonb AS "nutrition",`;
+    const sourceUrlSelect = mealsColumns.sourceUrl ? sql`m.source_url AS "sourceUrl",` : sql`NULL::text AS "sourceUrl",`;
+
     // Fetch all meals in households the user belongs to, in one round trip.
     // Note: We alias snake_case DB columns to the camelCase shape used by the mobile app.
     const mealsResult = await db.execute(sql`
@@ -138,9 +143,9 @@ export async function GET(req: Request) {
         m.created_by AS "createdBy",
         m.ingredients,
         m.instructions,
-        m.nutrition AS "nutrition",
+        ${nutritionSelect}
         m.from_global_meal_id AS "fromGlobalMealId",
-        m.source_url AS "sourceUrl",
+        ${sourceUrlSelect}
         m.rating,
         m.is_favorite AS "isFavorite",
         m.user_notes AS "userNotes",
@@ -181,6 +186,9 @@ export async function POST(req: Request) {
         return new NextResponse("Database not configured", { status: 500 });
     }
 
+    const mealsSelect = await getMealsSelect(db);
+    const mealsColumns = await getMealsColumnAvailability(db);
+
     if (isBodyTooLarge(req, 200_000)) {
       return new NextResponse('Payload too large', { status: 413 });
     }
@@ -218,7 +226,7 @@ export async function POST(req: Request) {
     // 1) Imported meals should be unique per household+from_global_meal_id.
     if (fromGlobalMealId) {
       const existingImported = await db
-        .select()
+        .select(mealsSelect)
         .from(meals)
         .where(and(eq(meals.householdId, householdId), eq(meals.fromGlobalMealId, fromGlobalMealId)))
         .limit(1);
@@ -233,7 +241,7 @@ export async function POST(req: Request) {
     } else {
       // 2) Custom meals should be unique per household+created_by+name+ingredients.
       const candidates = await db
-        .select()
+        .select(mealsSelect)
         .from(meals)
         .where(
           and(
@@ -278,7 +286,7 @@ export async function POST(req: Request) {
       ingredients: normalizedIngredients,
       instructions,
       fromGlobalMealId,
-      sourceUrl: sourceUrlInput,
+      sourceUrl: mealsColumns.sourceUrl ? sourceUrlInput : undefined,
       rating,
       isFavorite: typeof (body as any)?.isFavorite === 'boolean' ? (body as any).isFavorite : undefined,
       userNotes,

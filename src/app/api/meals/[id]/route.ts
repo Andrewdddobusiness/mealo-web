@@ -11,6 +11,7 @@ import {
   validateRecordId,
   validateUuid,
 } from '@/lib/validation';
+import { getMealsColumnAvailability, getMealsSelect } from '@/db/compat';
 import { db } from '../../../../db';
 import { meals, household_members, plans } from '../../../../db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -103,6 +104,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         return new NextResponse("Database not configured", { status: 500 });
     }
 
+    const mealsSelect = await getMealsSelect(db);
+    const mealsColumns = await getMealsColumnAvailability(db);
+
     const { id: idRaw } = await params;
     const id = validateRecordId(idRaw);
     if (!id) {
@@ -119,7 +123,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
 
     // 1. Fetch meal to check household ownership
-    const meal = await db.select().from(meals).where(eq(meals.id, id)).limit(1);
+    const meal = await db.select(mealsSelect).from(meals).where(eq(meals.id, id)).limit(1);
     if (meal.length === 0) {
         return new NextResponse("Meal not found", { status: 404 });
     }
@@ -157,7 +161,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (ingredients !== undefined) {
       if (!Array.isArray(ingredients)) return new NextResponse('Invalid ingredients', { status: 400 });
       updateData.ingredients = sanitizeIngredients(normalizeIngredients(ingredients));
-      updateData.nutrition = null;
+      if (mealsColumns.nutrition) updateData.nutrition = null;
     }
 
     if (instructions !== undefined) {
@@ -215,7 +219,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (sourceUrl !== undefined) {
       const cleaned = sanitizeSourceUrl(sourceUrl);
       if (cleaned === undefined) return new NextResponse('Invalid sourceUrl', { status: 400 });
-      updateData.sourceUrl = cleaned;
+      if (mealsColumns.sourceUrl) updateData.sourceUrl = cleaned;
     }
 
     if (Object.keys(updateData).length === 0) {
@@ -253,13 +257,15 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
       return new NextResponse('Database not configured', { status: 500 });
     }
 
+    const mealsSelect = await getMealsSelect(db);
+
     const { id: idRaw } = await params;
     const id = validateRecordId(idRaw);
     if (!id) {
       return new NextResponse('Invalid id', { status: 400 });
     }
 
-    const mealRows = await db.select().from(meals).where(eq(meals.id, id)).limit(1);
+    const mealRows = await db.select(mealsSelect).from(meals).where(eq(meals.id, id)).limit(1);
     if (mealRows.length === 0) {
       return new NextResponse('Meal not found', { status: 404 });
     }

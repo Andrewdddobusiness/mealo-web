@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
+import { getMealsSelect } from '@/db/compat';
 import { db } from '../../../db';
 import { globalMeals, households, household_members, meals, plans, subscriptions, users } from '../../../db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
@@ -66,8 +67,9 @@ export async function GET(req: Request) {
           .where(inArray(household_members.householdId, householdIds))
       : Promise.resolve([]);
 
+    const mealsSelect = await getMealsSelect(database);
     const mealsPromise = householdIds.length
-      ? database.select().from(meals).where(inArray(meals.householdId, householdIds))
+      ? database.select(mealsSelect).from(meals).where(inArray(meals.householdId, householdIds))
       : Promise.resolve([]);
 
     const globalMealsPromise = includeGlobalMeals ? database.select().from(globalMeals) : Promise.resolve(null);

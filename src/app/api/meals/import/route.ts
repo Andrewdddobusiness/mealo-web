@@ -3,6 +3,7 @@ import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { recordIngredientUsage } from '@/lib/ingredients';
 import { normalizeCuisine, normalizeIngredients, normalizeMealName } from '@/lib/normalizeMeal';
 import { isBodyTooLarge, validateUuid } from '@/lib/validation';
+import { getMealsSelect } from '@/db/compat';
 import { db } from '../../../../db';
 import { meals, globalMeals, household_members } from '../../../../db/schema';
 import { eq, and, isNull, sql } from 'drizzle-orm';
@@ -42,6 +43,8 @@ export async function POST(req: Request) {
         return new NextResponse("Database not configured", { status: 500 });
     }
 
+    const mealsSelect = await getMealsSelect(db);
+
     if (isBodyTooLarge(req, 25_000)) {
       return new NextResponse('Payload too large', { status: 413 });
     }
@@ -78,7 +81,7 @@ export async function POST(req: Request) {
 
     // 3. Check if already imported (by from_global_meal_id)
     const existing = await db
-      .select()
+      .select(mealsSelect)
       .from(meals)
       .where(and(eq(meals.householdId, householdId), eq(meals.fromGlobalMealId, gm.id)))
       .limit(1);
@@ -101,7 +104,7 @@ export async function POST(req: Request) {
     // If a meal was previously "copied" from global meals (same name + ingredients) but didn't set from_global_meal_id,
     // update that row instead of inserting another duplicate.
     const legacyCandidates = await db
-      .select()
+      .select(mealsSelect)
       .from(meals)
       .where(
         and(

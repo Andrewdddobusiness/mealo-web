@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { validateRecordId } from '@/lib/validation';
+import { getMealsSelect, hasMealsNutritionColumn } from '@/db/compat';
 import { db } from '../../../../../../db';
 import { meals, household_members } from '../../../../../../db/schema';
 import { and, eq } from 'drizzle-orm';
@@ -25,6 +26,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     if (!db) return new NextResponse('Database not configured', { status: 500 });
 
+    const hasNutrition = await hasMealsNutritionColumn(db);
+    if (!hasNutrition) {
+      return NextResponse.json(
+        { error: 'nutrition_unavailable', message: 'Nutrition facts are not available yet.' },
+        { status: 501 },
+      );
+    }
+
     const { id: idRaw } = await params;
     const id = validateRecordId(idRaw);
     if (!id) return new NextResponse('Invalid id', { status: 400 });
@@ -33,7 +42,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       return new NextResponse('Too many requests', { status: 429 });
     }
 
-    const mealRows = await db.select().from(meals).where(eq(meals.id, id)).limit(1);
+    const mealsSelect = await getMealsSelect(db);
+    const mealRows = await db.select(mealsSelect).from(meals).where(eq(meals.id, id)).limit(1);
     const meal = mealRows[0];
     if (!meal) return new NextResponse('Meal not found', { status: 404 });
 
@@ -85,4 +95,3 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return new NextResponse('Internal Error', { status: 500 });
   }
 }
-
