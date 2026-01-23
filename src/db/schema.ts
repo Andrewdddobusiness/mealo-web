@@ -6,6 +6,7 @@ export const users = pgTable('users', {
   email: text('email').notNull(),
   avatar: text('avatar'),
   proOverride: boolean('pro_override').notNull().default(false),
+  onboardingProfile: jsonb('onboarding_profile'),
   createdAt: timestamp('created_at').defaultNow(),
 });
 

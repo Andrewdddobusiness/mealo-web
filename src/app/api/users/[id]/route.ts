@@ -5,6 +5,71 @@ import { users } from '../../../../db/schema';
 import { eq } from 'drizzle-orm';
 import { isBodyTooLarge, stripControlChars } from '@/lib/validation';
 
+const ONBOARDING_GOALS = new Set(['plan_meals', 'eat_healthier', 'save_time', 'save_money', 'family_meals', 'other']);
+const ONBOARDING_FOOD_PREFERENCES = new Set(['flexible', 'vegetarian', 'vegan', 'pescatarian', 'other']);
+const ONBOARDING_COOKING_SKILLS = new Set(['novice', 'beginner', 'intermediate', 'advanced']);
+const ONBOARDING_PANTRY_LEVELS = new Set(['basic', 'average', 'well_stocked']);
+
+function normalizeEnum(value: unknown, allowed: Set<string>, maxLen: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const cleaned = stripControlChars(value).trim().slice(0, maxLen);
+  if (!cleaned) return undefined;
+  return allowed.has(cleaned) ? cleaned : undefined;
+}
+
+function normalizeStringArray(value: unknown, opts: { maxItems: number; maxItemLen: number }): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const cleaned = stripControlChars(item).trim().slice(0, opts.maxItemLen);
+    if (!cleaned) continue;
+    if (seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    out.push(cleaned);
+    if (out.length >= opts.maxItems) break;
+  }
+  return out;
+}
+
+function normalizeOnboardingProfile(value: unknown): Record<string, unknown> | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+
+  const raw = value as any;
+  const out: Record<string, unknown> = {};
+
+  if ('goal' in raw) {
+    out.goal = normalizeEnum(raw.goal, ONBOARDING_GOALS, 24) ?? null;
+  }
+  if ('foodPreference' in raw) {
+    out.foodPreference = normalizeEnum(raw.foodPreference, ONBOARDING_FOOD_PREFERENCES, 24) ?? null;
+  }
+  if ('cookingSkill' in raw) {
+    out.cookingSkill = normalizeEnum(raw.cookingSkill, ONBOARDING_COOKING_SKILLS, 24) ?? null;
+  }
+  if ('pantryLevel' in raw) {
+    out.pantryLevel = normalizeEnum(raw.pantryLevel, ONBOARDING_PANTRY_LEVELS, 24) ?? null;
+  }
+
+  if ('allergies' in raw) {
+    out.allergies = normalizeStringArray(raw.allergies, { maxItems: 80, maxItemLen: 80 });
+  }
+  if ('dislikes' in raw) {
+    out.dislikes = normalizeStringArray(raw.dislikes, { maxItems: 80, maxItemLen: 80 });
+  }
+  if ('cuisinesLiked' in raw) {
+    out.cuisinesLiked = normalizeStringArray(raw.cuisinesLiked, { maxItems: 80, maxItemLen: 80 });
+  }
+  if ('cuisinesDisliked' in raw) {
+    out.cuisinesDisliked = normalizeStringArray(raw.cuisinesDisliked, { maxItems: 80, maxItemLen: 80 });
+  }
+
+  return out;
+}
+
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const userId = await getUserIdFromRequest(req);
@@ -65,7 +130,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
             return new NextResponse("Forbidden", { status: 403 });
         }
 
-        const { name, email, avatar } = body as Partial<typeof users.$inferInsert>;
+        const { name, email, avatar, onboardingProfile } = body as Partial<typeof users.$inferInsert> & {
+          onboardingProfile?: unknown;
+        };
         const updateData: Partial<typeof users.$inferInsert> = {};
         if (name !== undefined) {
           if (typeof name !== 'string') return new NextResponse('Invalid name', { status: 400 });
@@ -88,6 +155,14 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
           } else {
             return new NextResponse('Invalid avatar', { status: 400 });
           }
+        }
+
+        if (onboardingProfile !== undefined) {
+          const normalized = normalizeOnboardingProfile(onboardingProfile);
+          if (normalized === undefined) {
+            return new NextResponse('Invalid onboardingProfile', { status: 400 });
+          }
+          updateData.onboardingProfile = normalized;
         }
 
         if (Object.keys(updateData).length === 0) {
