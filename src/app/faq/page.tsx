@@ -3,7 +3,7 @@ import React from "react";
 
 export default function FAQ() {
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#fdf8f2]">
+    <div className="relative min-h-screen overflow-hidden bg-background">
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute -left-10 top-10 h-64 w-64 rounded-full bg-primary/20 blur-pill" />
         <div className="absolute right-0 top-24 h-56 w-56 rounded-full bg-primary/15 blur-pill" />

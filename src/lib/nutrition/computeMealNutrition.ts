@@ -26,6 +26,12 @@ type GeminiGenerateResponse = {
 
 const DEFAULT_GEMINI_MODEL = 'gemini-1.5-flash';
 
+type UnknownRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
 function extractTextFromGemini(json: GeminiGenerateResponse): string {
   const parts = json.candidates?.[0]?.content?.parts ?? [];
   return parts.map((p) => (typeof p.text === 'string' ? p.text : '')).join('').trim();
@@ -36,8 +42,8 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...options, signal: controller.signal });
-  } catch (error: any) {
-    if (error?.name === 'AbortError') throw new AiTimeoutError('AI provider request timed out.');
+  } catch (error) {
+    if (isRecord(error) && error.name === 'AbortError') throw new AiTimeoutError('AI provider request timed out.');
     throw error;
   } finally {
     clearTimeout(timer);
@@ -109,7 +115,7 @@ export async function computeMealNutritionFromIngredients(input: {
   const ingredients = Array.isArray(input.ingredients) ? input.ingredients : [];
   if (ingredients.length === 0) {
     const err = new AiValidationError('Missing ingredients.');
-    (err as any).nutritionReason = 'missing_ingredients';
+    (err as AiValidationError & { nutritionReason?: string }).nutritionReason = 'missing_ingredients';
     throw err;
   }
 
@@ -177,15 +183,15 @@ export async function computeMealNutritionFromIngredients(input: {
   const text = extractTextFromGemini(json ?? {});
   const parsed = extractJsonObject(text);
 
-  if (parsed && typeof parsed === 'object' && typeof (parsed as any).error === 'string') {
-    const code = String((parsed as any).error).trim().toLowerCase();
+  if (isRecord(parsed) && typeof parsed.error === 'string') {
+    const code = parsed.error.trim().toLowerCase();
     if (code === 'missing_quantities') {
       const err = new AiValidationError(
-        typeof (parsed as any).message === 'string' && (parsed as any).message.trim()
-          ? String((parsed as any).message).trim()
+        typeof parsed.message === 'string' && parsed.message.trim()
+          ? parsed.message.trim()
           : 'Not enough ingredient detail to compute nutrition.',
       );
-      (err as any).nutritionReason = 'missing_quantities';
+      (err as AiValidationError & { nutritionReason?: string }).nutritionReason = 'missing_quantities';
       throw err;
     }
   }

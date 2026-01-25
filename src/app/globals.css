@@ -1,13 +1,16 @@
 @import "tailwindcss";
 
 :root {
-  --background: #fdf8f2;
+  /* Duolingo-inspired cleanliness, Mealo-branded warmth (v2) */
+  --background: #fffdfb;
   --foreground: #2d241f;
-  --muted: #8a817c;
-  --primary: #f09a56;
+  --muted: #6f6762;
+  --primary: #f28c3a;
   --secondary: #2d241f;
   --surface: #ffffff;
-  --border: rgba(45, 36, 31, 0.08);
+  --surface-subtle: #f7f6f3;
+  --border: rgba(45, 36, 31, 0.1);
+  --border-light: rgba(45, 36, 31, 0.06);
 }
 
 @theme inline {
@@ -17,15 +20,17 @@
   --color-primary: var(--primary);
   --color-secondary: var(--secondary);
   --color-surface: var(--surface);
+  --color-surface-subtle: var(--surface-subtle);
   --color-border: var(--border);
+  --color-border-light: var(--border-light);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-serif: var(--font-serif);
 }
 
 body {
-  background: radial-gradient(circle at 20% 20%, rgba(240, 154, 86, 0.08), transparent 25%),
-    radial-gradient(circle at 80% 0%, rgba(240, 154, 86, 0.06), transparent 30%),
+  background: radial-gradient(circle at 20% 20%, rgba(242, 140, 58, 0.08), transparent 25%),
+    radial-gradient(circle at 80% 0%, rgba(242, 140, 58, 0.06), transparent 30%),
     var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
@@ -37,9 +42,9 @@ body {
 }
 
 .glass-card {
-  background: rgba(255, 255, 255, 0.8);
-  border: 1px solid var(--border);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--border-light);
+  box-shadow: 0 14px 46px rgba(0, 0, 0, 0.08);
 }
 
 .fade-up {

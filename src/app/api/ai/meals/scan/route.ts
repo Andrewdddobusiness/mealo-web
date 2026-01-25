@@ -35,6 +35,14 @@ function parseMaxIngredients(formData: FormData): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function parseNote(formData: FormData): string | undefined {
+  const raw = formData.get('note');
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, 500);
+}
+
 export async function POST(req: Request) {
   const requestId = randomUUID();
 
@@ -86,6 +94,7 @@ export async function POST(req: Request) {
     }
 
     const maxIngredients = parseMaxIngredients(formData);
+    const note = parseNote(formData);
 
     await consumeAiCredits(db, userId, 'ai_scan_meal');
     await consumeAiUsage(db, userId, 'ai_scan_meal');
@@ -99,15 +108,19 @@ export async function POST(req: Request) {
       mimeType: normalizedType,
       maxIngredients,
       imageSize: imageSize ?? undefined,
+      note,
     });
 
     const res = NextResponse.json(
       {
+        kind: generated.kind,
         meal: generated.meal,
         confidence: generated.confidence,
         candidates: generated.candidates,
         region: generated.region,
         detections: generated.detections,
+        recipes: generated.recipes,
+        warnings: generated.warnings,
       },
       { status: 200 },
     );

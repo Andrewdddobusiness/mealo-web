@@ -136,6 +136,19 @@ export async function GET(req: Request) {
     const subscription = subscriptionRows[0] ?? null;
     const hasProOverride = Boolean(user?.proOverride);
     const now = new Date();
+
+    // Best-effort activity signal for notification "miss you" nudges.
+    // Keep this optional so older DBs (without notification tables) don't break bootstrap.
+    try {
+      await database.execute(sql`
+        UPDATE notification_settings
+        SET last_seen_at = ${now}, updated_at = ${now}
+        WHERE user_id = ${userId}
+      `);
+    } catch {
+      // ignore
+    }
+
     const subscriptionExpiresAt = subscription?.expiresAt instanceof Date ? subscription.expiresAt : null;
     const subscriptionIsActive =
       Boolean(subscription?.isActive) && Boolean(subscriptionExpiresAt && subscriptionExpiresAt > now);

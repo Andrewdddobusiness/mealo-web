@@ -225,3 +225,85 @@ export const feedbackComments = pgTable(
     createdAtIdx: index('feedback_comments_created_at_idx').on(table.createdAt),
   }),
 );
+
+export const notificationSettings = pgTable('notification_settings', {
+  userId: text('user_id')
+    .references(() => users.id, { onDelete: 'cascade' })
+    .primaryKey(),
+  enabled: boolean('enabled').notNull().default(false),
+  householdId: text('household_id').references(() => households.id, { onDelete: 'set null' }),
+  utcOffsetMinutes: integer('utc_offset_minutes').notNull().default(0),
+  quietHoursStart: integer('quiet_hours_start').notNull().default(22),
+  quietHoursEnd: integer('quiet_hours_end').notNull().default(8),
+  maxPerDay: integer('max_per_day').notNull().default(1),
+  remindTodayMissing: boolean('remind_today_missing').notNull().default(true),
+  remindTomorrowMissing: boolean('remind_tomorrow_missing').notNull().default(true),
+  remindMissYou: boolean('remind_miss_you').notNull().default(true),
+  lastSeenAt: timestamp('last_seen_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const pushTokens = pgTable(
+  'push_tokens',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    token: text('token').notNull(),
+    deviceId: text('device_id'),
+    platform: text('platform'),
+    disabledAt: timestamp('disabled_at'),
+    lastSeenAt: timestamp('last_seen_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+  },
+  (table) => ({
+    userIdx: index('push_tokens_user_id_idx').on(table.userId),
+    tokenUniq: uniqueIndex('push_tokens_token_uniq').on(table.token),
+    userDeviceIdx: index('push_tokens_user_id_device_id_idx').on(table.userId, table.deviceId),
+  }),
+);
+
+export const notificationSends = pgTable(
+  'notification_sends',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    householdId: text('household_id').references(() => households.id, { onDelete: 'set null' }),
+    type: text('type').notNull(),
+    dayKey: text('day_key').notNull(),
+    dateKey: text('date_key'),
+    meta: jsonb('meta'),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+  (table) => ({
+    userIdx: index('notification_sends_user_id_idx').on(table.userId),
+    uniqUserTypeDay: uniqueIndex('notification_sends_user_type_day_uniq').on(table.userId, table.type, table.dayKey),
+    userDayIdx: index('notification_sends_user_id_day_key_idx').on(table.userId, table.dayKey),
+  }),
+);
+
+export const userAchievements = pgTable(
+  'user_achievements',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    achievementId: text('achievement_id').notNull(),
+    progress: integer('progress').notNull().default(0),
+    unlockedAt: timestamp('unlocked_at'),
+    meta: jsonb('meta'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+  },
+  (table) => ({
+    userIdx: index('user_achievements_user_id_idx').on(table.userId),
+    achievementIdx: index('user_achievements_achievement_id_idx').on(table.achievementId),
+    uniqUserAchievement: uniqueIndex('user_achievements_user_id_achievement_id_uniq').on(table.userId, table.achievementId),
+  }),
+);
