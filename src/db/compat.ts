@@ -10,6 +10,46 @@ type MealsColumnAvailability = {
 
 let cachedMealsColumns: MealsColumnAvailability | null = null;
 
+function safeJsonStringify(value: unknown): string {
+  const serialized = JSON.stringify(value);
+  if (typeof serialized !== 'string') {
+    throw new Error('JSON.stringify returned non-string');
+  }
+  // Validate that what we're about to send to Postgres is actually valid JSON.
+  JSON.parse(serialized);
+  return serialized;
+}
+
+function normalizeJsonColumnValue(
+  column: 'ingredients' | 'instructions' | 'nutrition',
+  value: unknown,
+): string | null {
+  if (value === null) return null;
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return column === 'nutrition' ? null : '[]';
+
+    try {
+      JSON.parse(trimmed);
+      return trimmed;
+    } catch {
+      console.warn(`[insertMealCompat] Invalid JSON string for "${column}", falling back to empty value.`, {
+        length: trimmed.length,
+        preview: trimmed.slice(0, 120),
+      });
+      return column === 'nutrition' ? null : '[]';
+    }
+  }
+
+  try {
+    return safeJsonStringify(value);
+  } catch (error) {
+    console.warn(`[insertMealCompat] Failed to serialize "${column}", falling back to empty value.`, error);
+    return column === 'nutrition' ? null : '[]';
+  }
+}
+
 export async function getMealsColumnAvailability(db: NeonHttpDatabase<typeof schema>): Promise<MealsColumnAvailability> {
   if (cachedMealsColumns) return cachedMealsColumns;
 
@@ -58,8 +98,17 @@ export async function insertMealCompat(
 
   function push(column: string, value: unknown) {
     if (value === undefined) return;
+
+    let normalizedValue = value;
+    if (normalizedValue instanceof Date) {
+      normalizedValue = normalizedValue.toISOString();
+    }
+    if (column === 'ingredients' || column === 'instructions' || column === 'nutrition') {
+      normalizedValue = normalizeJsonColumnValue(column, normalizedValue);
+    }
+
     columns.push(column);
-    values.push(value);
+    values.push(normalizedValue);
   }
 
   push('id', meal.id);
@@ -71,7 +120,7 @@ export async function insertMealCompat(
   push('instructions', meal.instructions);
 
   if (availability.nutrition) {
-    push('nutrition', (meal as any).nutrition);
+    push('nutrition', meal.nutrition);
   }
 
   push('from_global_meal_id', meal.fromGlobalMealId);
