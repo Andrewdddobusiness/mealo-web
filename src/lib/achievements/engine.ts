@@ -136,6 +136,12 @@ async function computeSignals(database: Database, userId: string): Promise<Compu
   const householdIds = (householdRes.rows ?? [])
     .map((row) => (row as { id?: unknown }).id)
     .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  const householdIdList = householdIds.length
+    ? sql.join(
+        householdIds.map((id) => sql`${id}`),
+        sql`, `,
+      )
+    : sql``;
 
   const now = new Date();
   const today = dateKeyUtc(now);
@@ -179,7 +185,7 @@ async function computeSignals(database: Database, userId: string): Promise<Compu
           sql`
             SELECT COUNT(*)::int AS count
             FROM plans
-            WHERE household_id = ANY(${householdIds}::text[])
+            WHERE household_id IN (${householdIdList})
           `,
           { rows: [{ count: 0 }] },
           'plans',
@@ -191,7 +197,7 @@ async function computeSignals(database: Database, userId: string): Promise<Compu
           sql`
             SELECT household_id AS household_id, date AS date_key
             FROM plans
-            WHERE household_id = ANY(${householdIds}::text[])
+            WHERE household_id IN (${householdIdList})
               AND date >= ${today}
               AND date <= ${end}
           `,

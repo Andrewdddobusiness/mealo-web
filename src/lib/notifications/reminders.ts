@@ -387,10 +387,14 @@ export async function runNotificationReminderSweep(database: Database): Promise<
     });
 
     if (invalidTokenIds.length > 0) {
+      const invalidTokenIdList = sql.join(
+        invalidTokenIds.map((id) => sql`${id}`),
+        sql`, `,
+      );
       await database.execute(sql`
         UPDATE push_tokens
         SET disabled_at = ${now}, updated_at = ${now}
-        WHERE id = ANY(${invalidTokenIds}::text[])
+        WHERE id IN (${invalidTokenIdList})
       `);
     }
   }
