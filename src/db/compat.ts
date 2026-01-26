@@ -9,6 +9,28 @@ type MealsColumnAvailability = {
 };
 
 let cachedMealsColumns: MealsColumnAvailability | null = null;
+let cachedUsersHasHadTrialColumn: boolean | null = null;
+
+export async function hasUsersHasHadTrialColumn(db: NeonHttpDatabase<typeof schema>): Promise<boolean> {
+  if (cachedUsersHasHadTrialColumn !== null) return cachedUsersHasHadTrialColumn;
+
+  try {
+    const result = await db.execute(sql`
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'users'
+        AND column_name = 'has_had_trial'
+      LIMIT 1
+    `);
+
+    cachedUsersHasHadTrialColumn = Boolean(result.rows && result.rows.length > 0);
+  } catch {
+    cachedUsersHasHadTrialColumn = false;
+  }
+
+  return cachedUsersHasHadTrialColumn;
+}
 
 function safeJsonStringify(value: unknown): string {
   const serialized = JSON.stringify(value);

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
-import { getMealsSelect } from '@/db/compat';
+import { getMealsSelect, hasUsersHasHadTrialColumn } from '@/db/compat';
 import { db } from '../../../db';
 import { globalMeals, households, household_members, meals, plans, subscriptions, users } from '../../../db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
@@ -44,7 +44,22 @@ export async function GET(req: Request) {
       ),
     );
 
-    const userRowPromise = database.select().from(users).where(eq(users.id, userId)).limit(1);
+    const hasHadTrialColumn = await hasUsersHasHadTrialColumn(database);
+    const userRowPromise = hasHadTrialColumn
+      ? database.select().from(users).where(eq(users.id, userId)).limit(1)
+      : database
+          .select({
+            id: users.id,
+            name: users.name,
+            email: users.email,
+            avatar: users.avatar,
+            proOverride: users.proOverride,
+            onboardingProfile: users.onboardingProfile,
+            createdAt: users.createdAt,
+          })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1);
     const subscriptionPromise = database.select().from(subscriptions).where(eq(subscriptions.userId, userId)).limit(1);
 
     const householdsPromise = householdIds.length

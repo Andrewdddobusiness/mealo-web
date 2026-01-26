@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
 import { randomUUID, createHash } from 'crypto';
 import { db } from '@/db';
-import { subscriptions } from '@/db/schema';
+import { subscriptions, users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { isBodyTooLarge } from '@/lib/validation';
 import { GooglePlayValidationError, validateGooglePlaySubscription } from '@/lib/googlePlay';
+import { hasUsersHasHadTrialColumn } from '@/db/compat';
 
 const APPLE_VERIFY_RECEIPT_URL = 'https://buy.itunes.apple.com/verifyReceipt';
 const APPLE_SANDBOX_URL = 'https://sandbox.itunes.apple.com/verifyReceipt';
@@ -188,6 +189,12 @@ export async function POST(request: Request) {
           },
         });
 
+      // Mark the user as having unlocked the app once (trial/subscription validated).
+      // Keep this best-effort to avoid breaking older DBs that haven't added the column yet.
+      if (await hasUsersHasHadTrialColumn(db)) {
+        await db.update(users).set({ hasHadTrial: true }).where(eq(users.id, userId));
+      }
+
       const res = NextResponse.json(
         {
           success: true,
@@ -338,6 +345,12 @@ export async function POST(request: Request) {
           },
         });
       console.log('[IAP_VALIDATE] upserted subscription', { requestId, userId: mask(userId), productId });
+
+      // Mark the user as having unlocked the app once (trial/subscription validated).
+      // Keep this best-effort to avoid breaking older DBs that haven't added the column yet.
+      if (await hasUsersHasHadTrialColumn(db)) {
+        await db.update(users).set({ hasHadTrial: true }).where(eq(users.id, userId));
+      }
     } catch (dbError) {
       console.error('[IAP_VALIDATE] failed to upsert subscription', { requestId, userId: mask(userId), productId, dbError });
       throw dbError;
