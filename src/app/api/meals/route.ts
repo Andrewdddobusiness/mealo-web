@@ -11,7 +11,7 @@ import {
   validateMealName,
   validateUuid,
 } from '@/lib/validation';
-import { getMealsColumnAvailability, getMealsSelect } from '@/db/compat';
+import { getMealsColumnAvailability, getMealsSelect, insertMealCompat } from '@/db/compat';
 import { db } from '../../../db';
 import { meals, household_members } from '../../../db/schema';
 import { eq, and, isNull, sql } from 'drizzle-orm';
@@ -296,7 +296,7 @@ export async function POST(req: Request) {
       createdAt: new Date(),
     };
 
-    await db.insert(meals).values(newMeal);
+    await insertMealCompat(db, newMeal);
 
     try {
       await recordIngredientUsage(db, userId, newMeal.ingredients);

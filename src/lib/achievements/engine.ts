@@ -14,6 +14,44 @@ export type AchievementStatus = AchievementDefinition & {
   unlockedAt: string | null;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function getErrorCode(error: unknown): string | null {
+  if (!isRecord(error)) return null;
+  const code = error.code;
+  return typeof code === 'string' ? code : null;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && typeof error.message === 'string') return error.message;
+  if (isRecord(error) && typeof error.message === 'string') return error.message;
+  return String(error);
+}
+
+function isUndefinedTableError(error: unknown, tableName?: string): boolean {
+  const code = getErrorCode(error);
+  if (code === '42P01') return true;
+  const msg = getErrorMessage(error).toLowerCase();
+  if (!msg.includes('does not exist')) return false;
+  if (!tableName) return true;
+  return msg.includes(tableName.toLowerCase());
+}
+
+function isUndefinedColumnError(error: unknown, tableOrColumnHint?: string): boolean {
+  const code = getErrorCode(error);
+  if (code === '42703') return true;
+  const msg = getErrorMessage(error).toLowerCase();
+  if (!msg.includes('column') || !msg.includes('does not exist')) return false;
+  if (!tableOrColumnHint) return true;
+  return msg.includes(tableOrColumnHint.toLowerCase());
+}
+
+function isSchemaMissingError(error: unknown, hint?: string): boolean {
+  return isUndefinedTableError(error, hint) || isUndefinedColumnError(error, hint);
+}
+
 function parseCountRow(result: { rows?: unknown[] }): number {
   const row = (result.rows ?? [])[0] as { count?: unknown } | undefined;
   const raw = row?.count;
@@ -67,12 +105,34 @@ type ComputedSignals = {
   aiTotalUsed: number;
 };
 
+async function safeExecute(
+  database: Database,
+  query: Parameters<Database['execute']>[0],
+  fallback: { rows: unknown[] },
+  tableName: string,
+): Promise<{ rows: unknown[] }> {
+  try {
+    return await database.execute(query);
+  } catch (error) {
+    if (isSchemaMissingError(error, tableName)) {
+      console.warn('[ACHIEVEMENTS] schema mismatch; using fallback', { tableName, error: getErrorMessage(error) });
+      return fallback;
+    }
+    throw error;
+  }
+}
+
 async function computeSignals(database: Database, userId: string): Promise<ComputedSignals> {
-  const householdRes = await database.execute(sql`
-    SELECT household_id AS id
-    FROM household_members
-    WHERE user_id = ${userId}
-  `);
+  const householdRes = await safeExecute(
+    database,
+    sql`
+      SELECT household_id AS id
+      FROM household_members
+      WHERE user_id = ${userId}
+    `,
+    { rows: [] },
+    'household_members',
+  );
   const householdIds = (householdRes.rows ?? [])
     .map((row) => (row as { id?: unknown }).id)
     .filter((id): id is string => typeof id === 'string' && id.length > 0);
@@ -89,27 +149,55 @@ async function computeSignals(database: Database, userId: string): Promise<Compu
     planAnyRes,
     planWindowRes,
   ] = await Promise.all([
-    database.execute(sql`SELECT COUNT(*)::int AS count FROM meals WHERE created_by = ${userId}`),
-    database.execute(sql`SELECT COUNT(*)::int AS count FROM invites WHERE created_by = ${userId}`),
-    database.execute(
-      sql`SELECT COALESCE(SUM(used), 0)::int AS count FROM ai_usage WHERE user_id = ${userId} AND feature = 'ai_scan_meal'`,
+    safeExecute(
+      database,
+      sql`SELECT COUNT(*)::int AS count FROM meals WHERE created_by = ${userId}`,
+      { rows: [{ count: 0 }] },
+      'meals',
     ),
-    database.execute(sql`SELECT COALESCE(SUM(used), 0)::int AS count FROM ai_usage WHERE user_id = ${userId}`),
+    safeExecute(
+      database,
+      sql`SELECT COUNT(*)::int AS count FROM invites WHERE created_by = ${userId}`,
+      { rows: [{ count: 0 }] },
+      'invites',
+    ),
+    safeExecute(
+      database,
+      sql`SELECT COALESCE(SUM(used), 0)::int AS count FROM ai_usage WHERE user_id = ${userId} AND feature = 'ai_scan_meal'`,
+      { rows: [{ count: 0 }] },
+      'ai_usage',
+    ),
+    safeExecute(
+      database,
+      sql`SELECT COALESCE(SUM(used), 0)::int AS count FROM ai_usage WHERE user_id = ${userId}`,
+      { rows: [{ count: 0 }] },
+      'ai_usage',
+    ),
     householdIds.length
-      ? database.execute(sql`
-          SELECT COUNT(*)::int AS count
-          FROM plans
-          WHERE household_id = ANY(${householdIds}::text[])
-        `)
+      ? safeExecute(
+          database,
+          sql`
+            SELECT COUNT(*)::int AS count
+            FROM plans
+            WHERE household_id = ANY(${householdIds}::text[])
+          `,
+          { rows: [{ count: 0 }] },
+          'plans',
+        )
       : Promise.resolve({ rows: [{ count: 0 }] }),
     householdIds.length
-      ? database.execute(sql`
-          SELECT household_id AS household_id, date AS date_key
-          FROM plans
-          WHERE household_id = ANY(${householdIds}::text[])
-            AND date >= ${today}
-            AND date <= ${end}
-        `)
+      ? safeExecute(
+          database,
+          sql`
+            SELECT household_id AS household_id, date AS date_key
+            FROM plans
+            WHERE household_id = ANY(${householdIds}::text[])
+              AND date >= ${today}
+              AND date <= ${end}
+          `,
+          { rows: [] },
+          'plans',
+        )
       : Promise.resolve({ rows: [] }),
   ]);
 
@@ -163,18 +251,34 @@ export async function syncUserAchievements(database: Database, userId: string): 
   achievements: AchievementStatus[];
   unlocked: AchievementStatus[];
 }> {
-  const [existingRows, signals] = await Promise.all([
-    database
-      .select({
-        id: userAchievements.id,
-        achievementId: userAchievements.achievementId,
-        progress: userAchievements.progress,
-        unlockedAt: userAchievements.unlockedAt,
-      })
-      .from(userAchievements)
-      .where(eq(userAchievements.userId, userId)),
-    computeSignals(database, userId),
-  ]);
+  const signals = await computeSignals(database, userId);
+
+  let hasUserAchievementsTable = true;
+  const existingRows = await database
+    .select({
+      id: userAchievements.id,
+      achievementId: userAchievements.achievementId,
+      progress: userAchievements.progress,
+      unlockedAt: userAchievements.unlockedAt,
+    })
+    .from(userAchievements)
+    .where(eq(userAchievements.userId, userId))
+    .catch((error) => {
+      if (isSchemaMissingError(error, 'user_achievements')) {
+        hasUserAchievementsTable = false;
+        console.warn('[ACHIEVEMENTS] user_achievements unavailable; returning computed statuses only', {
+          userId,
+          error: getErrorMessage(error),
+        });
+        return [] as Array<{
+          id: string;
+          achievementId: string;
+          progress: number;
+          unlockedAt: Date | null;
+        }>;
+      }
+      throw error;
+    });
 
   const existingById = new Map<
     string,
@@ -190,6 +294,8 @@ export async function syncUserAchievements(database: Database, userId: string): 
 
   const computed = buildAchievementStatuses(signals);
   const now = new Date();
+  const unlockFallbackIso = `${dateKeyUtc(now)}T00:00:00.000Z`;
+  const storageAvailable = hasUserAchievementsTable;
 
   const unlocked: AchievementStatus[] = [];
   const upserts = ACHIEVEMENTS.map((def) => {
@@ -204,7 +310,7 @@ export async function syncUserAchievements(database: Database, userId: string): 
     const unlockedAt = alreadyUnlocked
       ? existing!.unlockedAt!
       : isUnlocked
-        ? now
+        ? (storageAvailable ? now : new Date(unlockFallbackIso))
         : null;
 
     const unlockedAtIso = unlockedAt ? unlockedAt.toISOString() : null;
@@ -214,7 +320,7 @@ export async function syncUserAchievements(database: Database, userId: string): 
       unlockedAt: unlockedAtIso,
     };
 
-    if (!alreadyUnlocked && isUnlocked) {
+    if (storageAvailable && !alreadyUnlocked && isUnlocked) {
       unlocked.push(status);
     }
 
@@ -230,18 +336,29 @@ export async function syncUserAchievements(database: Database, userId: string): 
     };
   });
 
-  if (upserts.length > 0) {
-    await database
-      .insert(userAchievements)
-      .values(upserts)
-      .onConflictDoUpdate({
-        target: [userAchievements.userId, userAchievements.achievementId],
-        set: {
-          progress: sql`excluded.progress`,
-          unlockedAt: sql`COALESCE(${userAchievements.unlockedAt}, excluded.unlocked_at)`,
-          updatedAt: now,
-        },
-      });
+  if (storageAvailable && upserts.length > 0) {
+    try {
+      await database
+        .insert(userAchievements)
+        .values(upserts)
+        .onConflictDoUpdate({
+          target: [userAchievements.userId, userAchievements.achievementId],
+          set: {
+            progress: sql`excluded.progress`,
+            unlockedAt: sql`COALESCE(${userAchievements.unlockedAt}, excluded.unlocked_at)`,
+            updatedAt: now,
+          },
+        });
+    } catch (error) {
+      if (isSchemaMissingError(error, 'user_achievements')) {
+        console.warn('[ACHIEVEMENTS] failed to persist achievements; continuing without storage', {
+          userId,
+          error: getErrorMessage(error),
+        });
+      } else {
+        throw error;
+      }
+    }
   }
 
   const achievements: AchievementStatus[] = ACHIEVEMENTS.map((def) => {
@@ -256,4 +373,3 @@ export async function syncUserAchievements(database: Database, userId: string): 
 
   return { achievements, unlocked };
 }
-

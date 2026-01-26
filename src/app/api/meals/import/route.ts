@@ -3,7 +3,7 @@ import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { recordIngredientUsage } from '@/lib/ingredients';
 import { normalizeCuisine, normalizeIngredients, normalizeMealName } from '@/lib/normalizeMeal';
 import { isBodyTooLarge, validateUuid } from '@/lib/validation';
-import { getMealsSelect } from '@/db/compat';
+import { getMealsSelect, insertMealCompat } from '@/db/compat';
 import { db } from '../../../../db';
 import { meals, globalMeals, household_members } from '../../../../db/schema';
 import { eq, and, isNull, sql } from 'drizzle-orm';
@@ -162,7 +162,7 @@ export async function POST(req: Request) {
         createdBy: userId
     };
 
-    await db.insert(meals).values(newMeal);
+    await insertMealCompat(db, newMeal);
 
     try {
       await recordIngredientUsage(db, userId, newMeal.ingredients);

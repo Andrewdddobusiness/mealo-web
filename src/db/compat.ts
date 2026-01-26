@@ -47,6 +47,57 @@ export async function hasMealsSourceUrlColumn(db: NeonHttpDatabase<typeof schema
   return (await getMealsColumnAvailability(db)).sourceUrl;
 }
 
+export async function insertMealCompat(
+  db: NeonHttpDatabase<typeof schema>,
+  meal: typeof meals.$inferInsert,
+): Promise<void> {
+  const availability = await getMealsColumnAvailability(db);
+
+  const columns: string[] = [];
+  const values: unknown[] = [];
+
+  function push(column: string, value: unknown) {
+    if (value === undefined) return;
+    columns.push(column);
+    values.push(value);
+  }
+
+  push('id', meal.id);
+  push('household_id', meal.householdId);
+  push('name', meal.name);
+  push('description', meal.description);
+  push('created_by', meal.createdBy);
+  push('ingredients', meal.ingredients);
+  push('instructions', meal.instructions);
+
+  if (availability.nutrition) {
+    push('nutrition', (meal as any).nutrition);
+  }
+
+  push('from_global_meal_id', meal.fromGlobalMealId);
+
+  if (availability.sourceUrl) {
+    push('source_url', meal.sourceUrl);
+  }
+
+  push('rating', meal.rating);
+  push('is_favorite', meal.isFavorite);
+  push('user_notes', meal.userNotes);
+  push('image', meal.image);
+  push('cuisine', meal.cuisine);
+  push('created_at', meal.createdAt);
+
+  if (columns.length === 0) {
+    throw new Error('insertMealCompat: no values provided');
+  }
+
+  await db.execute(sql`
+    INSERT INTO ${sql.identifier('meals')}
+    (${sql.join(columns.map((c) => sql.identifier(c)), sql`, `)})
+    VALUES (${sql.join(values.map((v) => sql.param(v)), sql`, `)})
+  `);
+}
+
 export async function getMealsSelect(db: NeonHttpDatabase<typeof schema>) {
   const availability = await getMealsColumnAvailability(db);
 
@@ -69,4 +120,3 @@ export async function getMealsSelect(db: NeonHttpDatabase<typeof schema>) {
     createdAt: meals.createdAt,
   };
 }
-
