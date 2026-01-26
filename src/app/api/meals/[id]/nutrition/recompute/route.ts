@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest } from '@/lib/requestAuth';
 import { validateRecordId } from '@/lib/validation';
-import { getMealsSelect, hasMealsNutritionColumn } from '@/db/compat';
+import { ensureMealsNutritionColumn, getMealsSelect } from '@/db/compat';
 import { db } from '../../../../../../db';
 import { meals, household_members } from '../../../../../../db/schema';
 import { and, eq } from 'drizzle-orm';
@@ -26,10 +26,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     if (!db) return new NextResponse('Database not configured', { status: 500 });
 
-    const hasNutrition = await hasMealsNutritionColumn(db);
+    const hasNutrition = await ensureMealsNutritionColumn(db);
     if (!hasNutrition) {
       return NextResponse.json(
-        { error: 'nutrition_unavailable', message: 'Nutrition facts are not available yet.' },
+        {
+          error: 'nutrition_unavailable',
+          message: 'Nutrition facts are not available yet.',
+        },
         { status: 501 },
       );
     }

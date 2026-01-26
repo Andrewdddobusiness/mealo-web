@@ -87,6 +87,20 @@ export async function hasMealsSourceUrlColumn(db: NeonHttpDatabase<typeof schema
   return (await getMealsColumnAvailability(db)).sourceUrl;
 }
 
+export async function ensureMealsNutritionColumn(db: NeonHttpDatabase<typeof schema>): Promise<boolean> {
+  const availability = await getMealsColumnAvailability(db);
+  if (availability.nutrition) return true;
+
+  try {
+    await db.execute(sql`ALTER TABLE meals ADD COLUMN IF NOT EXISTS nutrition jsonb`);
+  } catch (error) {
+    console.warn('[ensureMealsNutritionColumn] Failed to add meals.nutrition column', error);
+  }
+
+  cachedMealsColumns = null;
+  return (await getMealsColumnAvailability(db)).nutrition;
+}
+
 export async function insertMealCompat(
   db: NeonHttpDatabase<typeof schema>,
   meal: typeof meals.$inferInsert,
