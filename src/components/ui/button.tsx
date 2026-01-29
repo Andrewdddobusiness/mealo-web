@@ -4,16 +4,19 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full text-sm font-semibold transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 active:translate-y-[1px] disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full text-sm font-semibold transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 active:translate-y-[1px] disabled:pointer-events-none disabled:opacity-50 shadow-[0_6px_0_var(--btn-shadow)] active:shadow-[0_5px_0_var(--btn-shadow)]",
   {
     variants: {
       variant: {
-        default: "bg-primary text-white hover:opacity-90 focus-visible:ring-primary/60",
+        default:
+          "bg-primary text-white hover:opacity-90 focus-visible:ring-primary/60 [--btn-shadow:color-mix(in_srgb,var(--primary)_65%,black)]",
         secondary:
-          "bg-surface text-foreground border border-border hover:border-primary/50 focus-visible:ring-primary/30",
-        ghost: "bg-transparent text-foreground hover:bg-white/60",
+          "bg-surface text-foreground border border-border hover:border-primary/50 focus-visible:ring-primary/30 [--btn-shadow:rgba(45,36,31,0.10)]",
+        ghost:
+          "bg-transparent text-foreground hover:bg-white/60 [--btn-shadow:transparent] shadow-none",
         link: "text-primary underline-offset-4 hover:underline",
-        outline: "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
+        outline:
+          "border border-input bg-background hover:bg-accent hover:text-accent-foreground [--btn-shadow:rgba(45,36,31,0.08)]",
       },
       size: {
         default: "h-11 px-5",

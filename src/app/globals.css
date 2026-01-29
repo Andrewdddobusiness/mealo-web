@@ -23,9 +23,7 @@
   --color-surface-subtle: var(--surface-subtle);
   --color-border: var(--border);
   --color-border-light: var(--border-light);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-serif: var(--font-serif);
+  --font-sans: var(--font-fredoka);
 }
 
 body {
@@ -33,7 +31,20 @@ body {
     radial-gradient(circle at 80% 0%, rgba(242, 140, 58, 0.06), transparent 30%),
     var(--background);
   color: var(--foreground);
-  font-family: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+}
+
+.marketing-frame {
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid var(--border-light);
+  box-shadow: 0 26px 80px rgba(0, 0, 0, 0.10);
+}
+
+.marketing-soft {
+  background: linear-gradient(180deg, rgba(242, 140, 58, 0.10), transparent 40%),
+    radial-gradient(circle at 10% 20%, rgba(242, 140, 58, 0.14), transparent 35%),
+    radial-gradient(circle at 90% 0%, rgba(242, 140, 58, 0.10), transparent 35%),
+    var(--background);
 }
 
 .blur-pill {
@@ -58,4 +69,18 @@ body {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+@keyframes floatSoft {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.float-soft {
+  animation: floatSoft 7s ease-in-out infinite;
 }

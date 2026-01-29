@@ -1,26 +1,17 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Libre_Baskerville } from "next/font/google";
+import { Fredoka } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const fredoka = Fredoka({
+  variable: "--font-fredoka",
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-const libreBaskerville = Libre_Baskerville({
-  variable: "--font-serif",
-  weight: ["400", "700"],
-  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
-  title: "Mealo | Plan meals together",
-  description: "Invite your crew, share meal plans, and keep everyone in sync with Mealo.",
+  title: "Mealo | Create your cookbook",
+  description:
+    "Scan recipes from photos or cookbooks, generate meals with AI, and plan your week together with Mealo.",
 };
 
 export default function RootLayout({
@@ -31,7 +22,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${libreBaskerville.variable} antialiased min-h-screen bg-background text-foreground`}
+        className={`${fredoka.variable} antialiased min-h-screen bg-background text-foreground`}
       >
         {children}
       </body>

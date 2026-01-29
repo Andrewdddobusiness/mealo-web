@@ -16,11 +16,21 @@ export default function FAQ() {
         <div className="space-y-6 text-sm leading-relaxed text-muted">
           <section>
             <h2 className="text-lg font-semibold text-foreground">What is Mealo?</h2>
-            <p className="mt-2">Mealo is a meal planning app designed for households. It helps you plan meals together, generate shopping lists automatically, and keep everyone in sync.</p>
+            <p className="mt-2">
+              Mealo is a meal planning and recipe app designed for households. Scan recipes from photos (including cookbooks and recipe sheets), build your meal library, and plan meals together.
+            </p>
           </section>
           <section>
             <h2 className="text-lg font-semibold text-foreground">Is Mealo free?</h2>
-            <p className="mt-2">Mealo offers a free tier with essential features. We also have a premium subscription that unlocks advanced features like unlimited history, nutritional info, and more.</p>
+            <p className="mt-2">
+              Mealo offers a free tier with essential features. Mealo Pro unlocks premium planning features like advanced organization, multiple planners/groups, and more.
+            </p>
+          </section>
+          <section>
+            <h2 className="text-lg font-semibold text-foreground">Can Mealo generate recipes?</h2>
+            <p className="mt-2">
+              Yes. You can generate meals with AI by describing what you want (dietary preferences, cuisine, time, ingredients you have, etc.), then save the result to your library.
+            </p>
           </section>
           <section>
             <h2 className="text-lg font-semibold text-foreground">How do I invite my family?</h2>
@@ -32,7 +42,7 @@ export default function FAQ() {
           </section>
           <section>
             <h2 className="text-lg font-semibold text-foreground">Can I use Mealo on Android?</h2>
-            <p className="mt-2">Currently, Mealo is available on iOS. We are working hard to bring Mealo to Android devices soon.</p>
+            <p className="mt-2">Mealo is available on iOS. Android support is coming soon.</p>
           </section>
           <section>
             <h2 className="text-lg font-semibold text-foreground">How do I contact support?</h2>
