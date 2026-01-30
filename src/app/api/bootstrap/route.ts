@@ -5,6 +5,8 @@ import { db } from '../../../db';
 import { globalMeals, households, household_members, meals, plans, subscriptions, users } from '../../../db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
 
+export const dynamic = 'force-dynamic';
+
 function parseBoolean(value: string | null): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
@@ -173,7 +175,7 @@ export async function GET(req: Request) {
     const effectiveExpiresAt =
       subscriptionIsActive ? subscriptionExpiresAt : hasProOverride ? null : subscriptionExpiresAt;
 
-    return NextResponse.json({
+    const res = NextResponse.json({
       user,
       subscription: subscription
         ? {
@@ -202,6 +204,8 @@ export async function GET(req: Request) {
       meals: formattedMeals,
       globalMeals: includeGlobalMeals ? formattedGlobalMeals : undefined,
     });
+    res.headers.set('cache-control', 'no-store');
+    return res;
   } catch (error) {
     console.error('[BOOTSTRAP_GET]', error);
     return new NextResponse('Internal Error', { status: 500 });
