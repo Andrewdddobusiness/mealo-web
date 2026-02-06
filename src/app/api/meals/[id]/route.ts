@@ -12,6 +12,7 @@ import {
   validateUuid,
 } from '@/lib/validation';
 import { getMealsColumnAvailability, getMealsSelect } from '@/db/compat';
+import { autoRecomputeAndPersistMealNutrition } from '@/lib/nutrition/recomputeWorkflow';
 import { db } from '../../../../db';
 import { meals, household_members, plans } from '../../../../db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -161,7 +162,6 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (ingredients !== undefined) {
       if (!Array.isArray(ingredients)) return new NextResponse('Invalid ingredients', { status: 400 });
       updateData.ingredients = sanitizeIngredients(normalizeIngredients(ingredients));
-      if (mealsColumns.nutrition) updateData.nutrition = null;
     }
 
     if (instructions !== undefined) {
@@ -233,6 +233,16 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         await recordIngredientUsage(db, userId, updateData.ingredients);
       } catch (error) {
         console.error('[MEAL_PUT_INGREDIENT_USAGE]', error);
+      }
+
+      if (mealsColumns.nutrition) {
+        await autoRecomputeAndPersistMealNutrition({
+          db,
+          mealId: id,
+          mealName: typeof updateData.name === 'string' ? updateData.name : meal[0].name,
+          ingredients: updateData.ingredients,
+          loggerTag: 'MEAL_PUT_NUTRITION',
+        });
       }
     }
 

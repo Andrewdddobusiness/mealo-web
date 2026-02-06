@@ -243,7 +243,10 @@ function buildAchievementStatuses(signals: ComputedSignals): Array<Pick<Achievem
   return [
     { id: 'plan_first', progress: planFirst },
     { id: 'plan_streak_3', progress: signals.maxUpcomingStreak },
+    { id: 'plan_streak_5', progress: signals.maxUpcomingStreak },
     { id: 'plan_week', progress: signals.maxUpcomingStreak },
+    { id: 'plan_total_10', progress: signals.totalPlans },
+    { id: 'plan_total_25', progress: signals.totalPlans },
     { id: 'household_hero', progress: signals.maxUpcomingDaysPlanned },
     { id: 'meal_first', progress: signals.createdMeals },
     { id: 'meal_chef_10', progress: signals.createdMeals },

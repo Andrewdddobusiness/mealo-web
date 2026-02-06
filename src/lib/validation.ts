@@ -57,6 +57,17 @@ export function validateInviteToken(value: unknown): string | null {
   return token;
 }
 
+export const SHARE_TOKEN_MAX_LENGTH = 128;
+export const SHARE_TOKEN_MIN_LENGTH = 6;
+export function validateShareToken(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const token = value.trim();
+  if (token.length < SHARE_TOKEN_MIN_LENGTH) return null;
+  if (token.length > SHARE_TOKEN_MAX_LENGTH) return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(token)) return null;
+  return token;
+}
+
 export const MEAL_NAME_MAX_LENGTH = 60;
 export function validateMealName(value: unknown): string | null {
   if (typeof value !== 'string') return null;

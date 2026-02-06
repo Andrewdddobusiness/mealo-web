@@ -25,8 +25,21 @@ type GeminiGenerateResponse = {
 };
 
 const DEFAULT_GEMINI_MODEL = 'gemini-1.5-flash';
+const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
+const DEFAULT_CACHE_TTL_MS = 30 * 60_000;
+const MAX_CACHE_ENTRIES = 500;
 
 type UnknownRecord = Record<string, unknown>;
+type NutritionCacheEntry = { nutrition: NutritionFacts; expiresAtMs: number };
+
+const nutritionCacheByKey = new Map<string, NutritionCacheEntry>();
+const inFlightNutritionByKey = new Map<string, Promise<NutritionFacts>>();
+
+export type ComputeMealNutritionOptions = {
+  timeoutMs?: number;
+  cacheKey?: string;
+  useCache?: boolean;
+};
 
 function isRecord(value: unknown): value is UnknownRecord {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -101,11 +114,129 @@ function normalizeText(value: unknown, maxLen: number): string {
   return normalizeWhitespace(stripControlChars(value)).slice(0, maxLen);
 }
 
-export async function computeMealNutritionFromIngredients(input: {
+function cloneNutrition(input: NutritionFacts): NutritionFacts {
+  return { ...input };
+}
+
+function parseDurationMs(value: unknown, fallback: number): number {
+  if (typeof value !== 'string' && typeof value !== 'number') return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(24 * 60 * 60 * 1000, Math.max(1_000, Math.round(parsed)));
+}
+
+function getNutritionCacheTtlMs(): number {
+  return parseDurationMs(process.env.NUTRITION_CACHE_TTL_MS, DEFAULT_CACHE_TTL_MS);
+}
+
+function normalizeNumberForCache(value: number): string {
+  const rounded = Math.round(value * 10_000) / 10_000;
+  const asText = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(4);
+  return asText.replace(/\.?0+$/, '');
+}
+
+function normalizeQuantityForCache(value: unknown): string {
+  if (typeof value === 'number' && Number.isFinite(value)) return normalizeNumberForCache(value);
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const parsed = Number(trimmed);
+  if (Number.isFinite(parsed)) return normalizeNumberForCache(parsed);
+  return normalizeText(trimmed, 24).toLowerCase();
+}
+
+export function hasIngredientQuantities(ingredients: unknown): boolean {
+  if (!Array.isArray(ingredients)) return false;
+  return ingredients.some((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const quantity = (item as Record<string, unknown>).quantity;
+    if (typeof quantity === 'number') return Number.isFinite(quantity) && quantity > 0;
+    if (typeof quantity === 'string') {
+      const parsed = Number(quantity.trim());
+      return Number.isFinite(parsed) && parsed > 0;
+    }
+    return false;
+  });
+}
+
+export function buildNutritionCacheKey(input: {
   mealName?: string;
   ingredients: unknown;
   servings?: number;
-}): Promise<NutritionFacts> {
+}): string {
+  const mealName = normalizeText(input.mealName, 80).toLowerCase();
+  const servings =
+    typeof input.servings === 'number' && Number.isFinite(input.servings) && input.servings > 0
+      ? normalizeNumberForCache(input.servings)
+      : '';
+  const ingredients = Array.isArray(input.ingredients) ? input.ingredients : [];
+  const parts = ingredients
+    .map((raw) => {
+      if (!raw || typeof raw !== 'object') {
+        if (typeof raw === 'string') {
+          const text = normalizeText(raw, 80).toLowerCase();
+          return text ? `${text}|` : '';
+        }
+        return '';
+      }
+      const row = raw as Record<string, unknown>;
+      const name = normalizeText(row.name ?? row.ingredientKey, 80).toLowerCase();
+      if (!name) return '';
+      const quantity = normalizeQuantityForCache(row.quantity);
+      const unit = normalizeText(row.unit, 24).toLowerCase();
+      return `${name}|${quantity}|${unit}`;
+    })
+    .filter(Boolean)
+    .sort();
+  return `v1|${mealName}|${servings}|${parts.join(';')}`;
+}
+
+function pruneNutritionCache(nowMs: number): void {
+  for (const [key, value] of nutritionCacheByKey.entries()) {
+    if (value.expiresAtMs <= nowMs) {
+      nutritionCacheByKey.delete(key);
+    }
+  }
+
+  while (nutritionCacheByKey.size > MAX_CACHE_ENTRIES) {
+    const oldestKey = nutritionCacheByKey.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    nutritionCacheByKey.delete(oldestKey);
+  }
+}
+
+function getCachedNutrition(cacheKey: string, nowMs: number): NutritionFacts | null {
+  const entry = nutritionCacheByKey.get(cacheKey);
+  if (!entry) return null;
+  if (entry.expiresAtMs <= nowMs) {
+    nutritionCacheByKey.delete(cacheKey);
+    return null;
+  }
+  return cloneNutrition(entry.nutrition);
+}
+
+function setCachedNutrition(cacheKey: string, nutrition: NutritionFacts, nowMs: number): void {
+  const ttlMs = getNutritionCacheTtlMs();
+  nutritionCacheByKey.set(cacheKey, {
+    nutrition: cloneNutrition(nutrition),
+    expiresAtMs: nowMs + ttlMs,
+  });
+  pruneNutritionCache(nowMs);
+}
+
+export function clearNutritionComputationCacheForTests(): void {
+  nutritionCacheByKey.clear();
+  inFlightNutritionByKey.clear();
+}
+
+async function computeMealNutritionFromIngredientsUncached(
+  input: {
+    mealName?: string;
+    ingredients: unknown;
+    servings?: number;
+  },
+  timeoutMs: number,
+): Promise<NutritionFacts> {
   const provider = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
   if (provider !== 'gemini') throw new AiConfigError(`Unsupported AI provider: ${provider}`);
 
@@ -171,7 +302,7 @@ export async function computeMealNutritionFromIngredients(input: {
         },
       }),
     },
-    25_000,
+    timeoutMs,
   );
 
   const json = (await res.json().catch(() => null)) as GeminiGenerateResponse | null;
@@ -200,4 +331,50 @@ export async function computeMealNutritionFromIngredients(input: {
   nutrition.isEstimate = nutrition.isEstimate !== false;
   nutrition.computedAt = new Date().toISOString();
   return nutrition;
+}
+
+export async function computeMealNutritionFromIngredients(
+  input: {
+    mealName?: string;
+    ingredients: unknown;
+    servings?: number;
+  },
+  options: ComputeMealNutritionOptions = {},
+): Promise<NutritionFacts> {
+  const timeoutMs = parseDurationMs(options.timeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
+  const requestedCacheKey = typeof options.cacheKey === 'string' ? options.cacheKey.trim() : '';
+  const cacheKey = requestedCacheKey || buildNutritionCacheKey(input);
+  const useCache = options.useCache !== false && cacheKey.length > 0;
+  const nowMs = Date.now();
+
+  if (useCache) {
+    const cached = getCachedNutrition(cacheKey, nowMs);
+    if (cached) return cached;
+
+    const inFlight = inFlightNutritionByKey.get(cacheKey);
+    if (inFlight) {
+      const shared = await inFlight;
+      return cloneNutrition(shared);
+    }
+  }
+
+  const run = computeMealNutritionFromIngredientsUncached(input, timeoutMs).then((nutrition) => {
+    if (useCache) {
+      setCachedNutrition(cacheKey, nutrition, Date.now());
+    }
+    return nutrition;
+  });
+
+  if (useCache) {
+    inFlightNutritionByKey.set(cacheKey, run);
+  }
+
+  try {
+    const nutrition = await run;
+    return cloneNutrition(nutrition);
+  } finally {
+    if (useCache) {
+      inFlightNutritionByKey.delete(cacheKey);
+    }
+  }
 }

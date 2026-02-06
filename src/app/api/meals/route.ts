@@ -12,6 +12,7 @@ import {
   validateUuid,
 } from '@/lib/validation';
 import { getMealsColumnAvailability, getMealsSelect, insertMealCompat } from '@/db/compat';
+import { autoRecomputeAndPersistMealNutrition } from '@/lib/nutrition/recomputeWorkflow';
 import { db } from '../../../db';
 import { meals, household_members } from '../../../db/schema';
 import { eq, and, isNull, sql } from 'drizzle-orm';
@@ -304,7 +305,25 @@ export async function POST(req: Request) {
       console.error('[MEALS_POST_INGREDIENT_USAGE]', error);
     }
 
-    const res = NextResponse.json(newMeal);
+    await autoRecomputeAndPersistMealNutrition({
+      db,
+      mealId: id,
+      mealName: newMeal.name,
+      ingredients: newMeal.ingredients,
+      loggerTag: 'MEALS_POST_NUTRITION',
+    });
+
+    const createdRows = await db.select(mealsSelect).from(meals).where(eq(meals.id, id)).limit(1);
+    const createdMeal = createdRows[0];
+    const payload = createdMeal
+      ? {
+          ...createdMeal,
+          ingredients: createdMeal.ingredients,
+          instructions: createdMeal.instructions,
+        }
+      : newMeal;
+
+    const res = NextResponse.json(payload);
     res.headers.set('cache-control', 'no-store');
     return res;
 

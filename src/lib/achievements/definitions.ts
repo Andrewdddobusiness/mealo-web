@@ -27,12 +27,36 @@ export const ACHIEVEMENTS: AchievementDefinition[] = [
     target: 3,
   },
   {
+    id: 'plan_streak_5',
+    title: '5-day streak',
+    description: 'Have meals planned for 5 days in a row.',
+    iconName: 'activity',
+    category: 'planning',
+    target: 5,
+  },
+  {
     id: 'plan_week',
     title: 'Week planned',
     description: 'Plan meals for 7 days in a row.',
     iconName: 'check-circle',
     category: 'planning',
     target: 7,
+  },
+  {
+    id: 'plan_total_10',
+    title: 'Planner in motion',
+    description: 'Plan 10 meals.',
+    iconName: 'calendar',
+    category: 'planning',
+    target: 10,
+  },
+  {
+    id: 'plan_total_25',
+    title: 'Planning pro',
+    description: 'Plan 25 meals.',
+    iconName: 'calendar',
+    category: 'planning',
+    target: 25,
   },
   {
     id: 'household_hero',
@@ -83,4 +107,3 @@ export const ACHIEVEMENTS: AchievementDefinition[] = [
     target: 20,
   },
 ];
-

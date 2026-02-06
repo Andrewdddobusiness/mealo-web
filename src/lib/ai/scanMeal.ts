@@ -21,6 +21,10 @@ export type ScanDetection = {
   bbox: { x: number; y: number; width: number; height: number };
 };
 
+export type ScanFocus = {
+  requestedBbox: { x: number; y: number; width: number; height: number };
+};
+
 export type ScanRecipeItem = {
   id: string;
   recipe: GeneratedMeal;
@@ -104,6 +108,23 @@ function normalizeBbox(
   const ch = clamp(h + pad * 2, 0.05, 1);
   const cx = clamp(clamp(x, 0, 1) - pad, 0, 1 - cw);
   const cy = clamp(clamp(y, 0, 1) - pad, 0, 1 - ch);
+  return { x: cx, y: cy, width: cw, height: ch };
+}
+
+function normalizeInputFocusBbox(raw: unknown): ScanRegion["bbox"] | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+  const x = typeof obj.x === "number" && Number.isFinite(obj.x) ? obj.x : undefined;
+  const y = typeof obj.y === "number" && Number.isFinite(obj.y) ? obj.y : undefined;
+  const width = typeof obj.width === "number" && Number.isFinite(obj.width) ? obj.width : undefined;
+  const height = typeof obj.height === "number" && Number.isFinite(obj.height) ? obj.height : undefined;
+  if (x == null || y == null || width == null || height == null) return undefined;
+  if (width <= 0 || height <= 0) return undefined;
+
+  const cw = clamp(width, 0.05, 1);
+  const ch = clamp(height, 0.05, 1);
+  const cx = clamp(x, 0, 1 - cw);
+  const cy = clamp(y, 0, 1 - ch);
   return { x: cx, y: cy, width: cw, height: ch };
 }
 
@@ -322,12 +343,14 @@ export async function scanMealFromImage(input: {
   maxIngredients?: number;
   imageSize?: ImageSize;
   note?: string;
+  focusBbox?: { x: number; y: number; width: number; height: number };
 }): Promise<{
   meal: GeneratedMeal;
   kind?: "meal" | "recipes";
   recipes?: ScanRecipeItem[];
   warnings?: string[];
   region?: ScanRegion;
+  focus?: ScanFocus;
   confidence?: number;
   candidates?: ScanCandidate[];
   detections?: ScanDetection[];
@@ -356,6 +379,7 @@ export async function scanMealFromImage(input: {
   const maxIngredients = clampMaxIngredients(input.maxIngredients);
   const userNote =
     typeof input.note === "string" ? input.note.trim().slice(0, 500) : "";
+  const requestedFocusBbox = normalizeInputFocusBbox(input.focusBbox);
 
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     model,
@@ -391,12 +415,14 @@ export async function scanMealFromImage(input: {
     '- Detection names should be specific (e.g., "Pad Thai", "Water Bottle", "Fried Rice" rather than just "Food").',
     "- If only a single food item is visible, the detections array should contain exactly 1 detection for that item.",
     '- For kind="recipes", include source.bbox around each recipe section only if it is obvious; otherwise omit it.',
+    '- If a user-provided focus bbox is included, treat it as user intent metadata (it may reference an original uncropped frame). Always return region/detection coordinates normalized to the provided image.',
   ].join("\n");
 
   const userPrompt = [
     'If the image contains recipe text, extract all recipes as kind="recipes".',
     'If the image is a meal photo, return kind="meal".',
     'If it does not look food- or recipe-related, return { "error": "not_food" }.',
+    ...(requestedFocusBbox ? [`User focus bbox metadata (normalized 0..1; may reference original uncropped frame): ${JSON.stringify(requestedFocusBbox)}`] : []),
     ...(userNote ? [`User note (optional):\n${userNote}`] : []),
   ].join("\n");
 
@@ -451,6 +477,7 @@ export async function scanMealFromImage(input: {
       kind: "recipes",
       meal: recipeItems[0].recipe,
       recipes: recipeItems,
+      ...(requestedFocusBbox ? { focus: { requestedBbox: requestedFocusBbox } } : null),
       ...(warnings.length ? { warnings } : null),
     };
   }
@@ -469,6 +496,7 @@ export async function scanMealFromImage(input: {
       kind: "recipes",
       meal: recipeItems[0].recipe,
       recipes: recipeItems,
+      ...(requestedFocusBbox ? { focus: { requestedBbox: requestedFocusBbox } } : null),
       ...(warnings.length ? { warnings } : null),
     };
   }
@@ -479,5 +507,13 @@ export async function scanMealFromImage(input: {
   const detections = extractDetections(parsedPrimary, input.imageSize);
 
   const meal = validateGeneratedMeal(parsedPrimary, maxIngredients);
-  return { kind: "meal", meal, region, confidence, candidates, detections };
+  return {
+    kind: "meal",
+    meal,
+    region,
+    ...(requestedFocusBbox ? { focus: { requestedBbox: requestedFocusBbox } } : null),
+    confidence,
+    candidates,
+    detections,
+  };
 }

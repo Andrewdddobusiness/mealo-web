@@ -112,6 +112,47 @@ export const invites = pgTable('invites', {
   tokenIdx: index('invites_token_idx').on(table.token),
 }));
 
+export const mealShares = pgTable(
+  'meal_shares',
+  {
+    id: text('id').primaryKey(),
+    token: text('token').notNull(),
+    createdBy: text('created_by').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    sourceMealId: text('source_meal_id').references(() => meals.id, { onDelete: 'set null' }),
+    sourceGlobalMealId: text('source_global_meal_id').references(() => globalMeals.id, { onDelete: 'set null' }),
+    sourceHouseholdId: text('source_household_id').references(() => households.id, { onDelete: 'set null' }),
+    snapshot: jsonb('snapshot').notNull().default({}),
+    expiresAt: timestamp('expires_at'),
+    revokedAt: timestamp('revoked_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+  (table) => ({
+    tokenUniq: uniqueIndex('meal_shares_token_uniq').on(table.token),
+    createdByIdx: index('meal_shares_created_by_idx').on(table.createdBy),
+    sourceMealIdx: index('meal_shares_source_meal_id_idx').on(table.sourceMealId),
+  }),
+);
+
+export const mealShareAcceptances = pgTable(
+  'meal_share_acceptances',
+  {
+    id: text('id').primaryKey(),
+    shareId: text('share_id').references(() => mealShares.id, { onDelete: 'cascade' }).notNull(),
+    acceptedBy: text('accepted_by').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    createdMealId: text('created_meal_id').references(() => meals.id, { onDelete: 'set null' }),
+    householdId: text('household_id').references(() => households.id, { onDelete: 'set null' }),
+    acceptedAt: timestamp('accepted_at').defaultNow(),
+  },
+  (table) => ({
+    shareIdx: index('meal_share_acceptances_share_id_idx').on(table.shareId),
+    acceptedByIdx: index('meal_share_acceptances_accepted_by_idx').on(table.acceptedBy),
+    uniqShareAcceptedBy: uniqueIndex('meal_share_acceptances_share_id_accepted_by_uniq').on(
+      table.shareId,
+      table.acceptedBy,
+    ),
+  }),
+);
+
 export const subscriptions = pgTable('subscriptions', {
   userId: text('user_id').references(() => users.id).primaryKey(),
   originalTransactionId: text('original_transaction_id').notNull(),

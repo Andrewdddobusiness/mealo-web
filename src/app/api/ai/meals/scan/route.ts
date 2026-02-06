@@ -20,6 +20,7 @@ const rateLimitByUser = new Map<string, { resetAtMs: number; count: number }>();
 
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024; // 6MB
 const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
+type NormalizedBBox = { x: number; y: number; width: number; height: number };
 
 function jsonError(status: number, error: string, message: string, requestId: string, meta?: Record<string, unknown>) {
   const res = NextResponse.json({ error, message, requestId, ...meta }, { status });
@@ -41,6 +42,39 @@ function parseNote(formData: FormData): string | undefined {
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
   return trimmed.slice(0, 500);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function parseFocusBbox(formData: FormData): NormalizedBBox | undefined {
+  const raw = formData.get('focusBbox');
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const obj = parsed as Record<string, unknown>;
+  const x = typeof obj.x === 'number' && Number.isFinite(obj.x) ? obj.x : null;
+  const y = typeof obj.y === 'number' && Number.isFinite(obj.y) ? obj.y : null;
+  const width = typeof obj.width === 'number' && Number.isFinite(obj.width) ? obj.width : null;
+  const height = typeof obj.height === 'number' && Number.isFinite(obj.height) ? obj.height : null;
+  if (x == null || y == null || width == null || height == null) return undefined;
+  if (width <= 0 || height <= 0) return undefined;
+
+  const clampedWidth = clamp(width, 0.05, 1);
+  const clampedHeight = clamp(height, 0.05, 1);
+  const clampedX = clamp(x, 0, 1 - clampedWidth);
+  const clampedY = clamp(y, 0, 1 - clampedHeight);
+  return { x: clampedX, y: clampedY, width: clampedWidth, height: clampedHeight };
 }
 
 export async function POST(req: Request) {
@@ -95,6 +129,7 @@ export async function POST(req: Request) {
 
     const maxIngredients = parseMaxIngredients(formData);
     const note = parseNote(formData);
+    const focusBbox = parseFocusBbox(formData);
 
     await consumeAiCredits(db, userId, 'ai_scan_meal');
     await consumeAiUsage(db, userId, 'ai_scan_meal');
@@ -109,6 +144,7 @@ export async function POST(req: Request) {
       maxIngredients,
       imageSize: imageSize ?? undefined,
       note,
+      focusBbox,
     });
 
     const res = NextResponse.json(
@@ -119,6 +155,7 @@ export async function POST(req: Request) {
         candidates: generated.candidates,
         region: generated.region,
         detections: generated.detections,
+        focus: generated.focus,
         recipes: generated.recipes,
         warnings: generated.warnings,
       },

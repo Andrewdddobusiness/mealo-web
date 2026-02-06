@@ -5,19 +5,13 @@ import { ensureMealsNutritionColumn, getMealsSelect } from '@/db/compat';
 import { db } from '../../../../../../db';
 import { meals, household_members } from '../../../../../../db/schema';
 import { and, eq } from 'drizzle-orm';
-import { computeMealNutritionFromIngredients } from '@/lib/nutrition/computeMealNutrition';
+import {
+  buildNutritionCacheKey,
+  computeMealNutritionFromIngredients,
+  hasIngredientQuantities,
+} from '@/lib/nutrition/computeMealNutrition';
 import { AiTimeoutError, AiValidationError, AiProviderError } from '@/lib/ai/generateMeal';
-
-const rateLimitByUser = new Map<string, number>();
-const RATE_LIMIT_WINDOW_MS = 25_000;
-
-function canRecompute(userId: string): boolean {
-  const now = Date.now();
-  const prev = rateLimitByUser.get(userId) ?? 0;
-  if (now - prev < RATE_LIMIT_WINDOW_MS) return false;
-  rateLimitByUser.set(userId, now);
-  return true;
-}
+import { canRecomputeNutritionForUser } from '@/lib/nutrition/recomputeRateLimit';
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -41,8 +35,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const id = validateRecordId(idRaw);
     if (!id) return new NextResponse('Invalid id', { status: 400 });
 
-    if (!canRecompute(userId)) {
-      return new NextResponse('Too many requests', { status: 429 });
+    if (!canRecomputeNutritionForUser(userId)) {
+      const res = new NextResponse('Too many requests', { status: 429 });
+      res.headers.set('retry-after', '25');
+      return res;
     }
 
     const mealsSelect = await getMealsSelect(db);
@@ -59,11 +55,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (membership.length === 0) return new NextResponse('Forbidden', { status: 403 });
 
     const ingredients = Array.isArray(meal.ingredients) ? meal.ingredients : [];
-    const hasSomeQuantity = ingredients.some((item) => {
-      if (!item || typeof item !== 'object') return false;
-      const q = (item as any).quantity;
-      return typeof q === 'number' ? Number.isFinite(q) && q > 0 : typeof q === 'string' ? Number(q) > 0 : false;
-    });
+    const hasSomeQuantity = hasIngredientQuantities(ingredients);
 
     if (!hasSomeQuantity) {
       return NextResponse.json(
@@ -75,7 +67,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       );
     }
 
-    const nutrition = await computeMealNutritionFromIngredients({ mealName: meal.name, ingredients: meal.ingredients });
+    const nutrition = await computeMealNutritionFromIngredients(
+      { mealName: meal.name, ingredients },
+      {
+        cacheKey: buildNutritionCacheKey({ mealName: meal.name, ingredients }),
+      },
+    );
 
     await db.update(meals).set({ nutrition }).where(eq(meals.id, id));
 

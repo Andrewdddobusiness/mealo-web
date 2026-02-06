@@ -4,6 +4,7 @@ import { recordIngredientUsage } from '@/lib/ingredients';
 import { normalizeCuisine, normalizeIngredients, normalizeMealName } from '@/lib/normalizeMeal';
 import { isBodyTooLarge, validateUuid } from '@/lib/validation';
 import { getMealsSelect, insertMealCompat } from '@/db/compat';
+import { autoRecomputeAndPersistMealNutrition } from '@/lib/nutrition/recomputeWorkflow';
 import { db } from '../../../../db';
 import { meals, globalMeals, household_members } from '../../../../db/schema';
 import { eq, and, isNull, sql } from 'drizzle-orm';
@@ -93,10 +94,21 @@ export async function POST(req: Request) {
         console.error('[MEAL_IMPORT_EXISTING_INGREDIENT_USAGE]', error);
       }
 
-      return NextResponse.json({
-        ...existing[0],
+      await autoRecomputeAndPersistMealNutrition({
+        db,
+        mealId: existing[0].id,
+        mealName: existing[0].name,
         ingredients: existing[0].ingredients,
-        instructions: existing[0].instructions,
+        loggerTag: 'MEAL_IMPORT_EXISTING_NUTRITION',
+      });
+
+      const existingRows = await db.select(mealsSelect).from(meals).where(eq(meals.id, existing[0].id)).limit(1);
+      const existingMeal = existingRows[0] ?? existing[0];
+
+      return NextResponse.json({
+        ...existingMeal,
+        ingredients: existingMeal.ingredients,
+        instructions: existingMeal.instructions,
       });
     }
 
@@ -137,11 +149,24 @@ export async function POST(req: Request) {
         console.error('[MEAL_IMPORT_LEGACY_INGREDIENT_USAGE]', error);
       }
 
-      return NextResponse.json({
+      await autoRecomputeAndPersistMealNutrition({
+        db,
+        mealId: legacyMatch.id,
+        mealName: updated.name,
+        ingredients: updated.ingredients,
+        loggerTag: 'MEAL_IMPORT_LEGACY_NUTRITION',
+      });
+
+      const legacyRows = await db.select(mealsSelect).from(meals).where(eq(meals.id, legacyMatch.id)).limit(1);
+      const legacyMeal = legacyRows[0] ?? {
         ...legacyMatch,
         ...updated,
-        ingredients: updated.ingredients,
-        instructions: gm.instructions,
+      };
+
+      return NextResponse.json({
+        ...legacyMeal,
+        ingredients: legacyMeal.ingredients,
+        instructions: legacyMeal.instructions,
       });
     }
 
@@ -170,7 +195,18 @@ export async function POST(req: Request) {
       console.error('[MEAL_IMPORT_POST_INGREDIENT_USAGE]', error);
     }
 
-    const res = NextResponse.json(newMeal);
+    await autoRecomputeAndPersistMealNutrition({
+      db,
+      mealId: newMeal.id,
+      mealName: newMeal.name,
+      ingredients: newMeal.ingredients,
+      loggerTag: 'MEAL_IMPORT_POST_NUTRITION',
+    });
+
+    const insertedRows = await db.select(mealsSelect).from(meals).where(eq(meals.id, newMeal.id)).limit(1);
+    const insertedMeal = insertedRows[0] ?? newMeal;
+
+    const res = NextResponse.json(insertedMeal);
     res.headers.set('cache-control', 'no-store');
     return res;
 

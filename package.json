@@ -7,6 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test:ai-scan": "tsx --test src/lib/ai/scanMealRoundtrip.test.ts",
+    "test:nutrition": "tsx --test src/lib/nutrition/**/*.test.ts",
+    "test": "npm run test:nutrition && npm run test:ai-scan",
     "seed:ingredients:catalog": "node scripts/seed-ingredients-catalog.mjs",
     "seed:global-meal-images": "node scripts/seed-global-meal-images.mjs",
     "generate:global-meal-images": "node scripts/generate-global-meal-images.mjs"
@@ -37,6 +40,7 @@
     "eslint": "^9",
     "eslint-config-next": "15.5.9",
     "tailwindcss": "^4",
+    "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }
 }
