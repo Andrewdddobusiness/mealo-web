@@ -27,6 +27,7 @@ export async function GET(req: Request) {
       const result = await db.execute(sql`
         WITH user_candidates AS (
           SELECT
+            id,
             name,
             name_normalized,
             category,
@@ -41,6 +42,7 @@ export async function GET(req: Request) {
         ),
         global_candidates AS (
           SELECT
+            id,
             name,
             name_normalized,
             category,
@@ -88,6 +90,7 @@ export async function GET(req: Request) {
     const result = await db.execute(sql`
       WITH candidates AS (
         SELECT
+          id,
           name,
           name_normalized,
           category,
@@ -104,6 +107,7 @@ export async function GET(req: Request) {
         UNION ALL
 
         SELECT
+          id,
           name,
           name_normalized,
           category,
